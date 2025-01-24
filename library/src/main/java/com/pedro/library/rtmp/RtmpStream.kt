@@ -1,17 +1,36 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.library.rtmp
 
 import android.content.Context
 import android.media.MediaCodec
 import android.os.Build
 import androidx.annotation.RequiresApi
-import com.pedro.encoder.utils.CodecUtil
+import com.pedro.common.AudioCodec
+import com.pedro.common.ConnectChecker
+import com.pedro.common.VideoCodec
 import com.pedro.library.base.StreamBase
-import com.pedro.library.util.sources.AudioManager
-import com.pedro.library.util.sources.VideoManager
-import com.pedro.rtmp.flv.video.ProfileIop
+import com.pedro.encoder.input.sources.audio.AudioSource
+import com.pedro.encoder.input.sources.audio.MicrophoneSource
+import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.sources.video.VideoSource
+import com.pedro.library.util.streamclient.RtmpStreamClient
+import com.pedro.library.util.streamclient.StreamClientListener
 import com.pedro.rtmp.rtmp.RtmpClient
-import com.pedro.rtmp.rtmp.VideoCodec
-import com.pedro.rtmp.utils.ConnectCheckerRtmp
 import java.nio.ByteBuffer
 
 /**
@@ -22,134 +41,54 @@ import java.nio.ByteBuffer
  */
 
 @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-class RtmpStream(context: Context, connectCheckerRtmp: ConnectCheckerRtmp, videoSource: VideoManager.Source,
-  audioSource: AudioManager.Source): StreamBase(context, videoSource, audioSource) {
+class RtmpStream(
+    context: Context, connectChecker: ConnectChecker, videoSource: VideoSource,
+    audioSource: AudioSource
+): StreamBase(context, videoSource, audioSource) {
 
-  constructor(context: Context, connectCheckerRtmp: ConnectCheckerRtmp):
-      this(context, connectCheckerRtmp, VideoManager.Source.CAMERA2, AudioManager.Source.MICROPHONE)
-
-  private val rtmpClient = RtmpClient(connectCheckerRtmp)
-
-  /**
-   * H264 profile.
-   *
-   * @param profileIop Could be ProfileIop.BASELINE or ProfileIop.CONSTRAINED
-   */
-  fun setProfileIop(profileIop: ProfileIop?) {
-    rtmpClient.setProfileIop(profileIop!!)
-  }
-
-  fun setVideoCodec(videoCodec: VideoCodec) {
-    val mime = if (videoCodec === VideoCodec.H265) CodecUtil.H265_MIME else CodecUtil.H264_MIME
-    super.setVideoMime(mime)
-    rtmpClient.setVideoCodec(videoCodec)
-  }
-
-  /**
-   * Some Livestream hosts use Akamai auth that requires RTMP packets to be sent with increasing
-   * timestamp order regardless of packet type.
-   * Necessary with Servers like Dacast.
-   * More info here:
-   * https://learn.akamai.com/en-us/webhelp/media-services-live/media-services-live-encoder-compatibility-testing-and-qualification-guide-v4.0/GUID-F941C88B-9128-4BF4-A81B-C2E5CFD35BBF.html
-   */
-  fun forceAkamaiTs(enabled: Boolean) {
-    rtmpClient.forceAkamaiTs(enabled)
-  }
-
-  /**
-   * Must be called before start stream.
-   *
-   * Default value 128
-   * Range value: 1 to 16777215.
-   *
-   * The most common values example: 128, 4096, 65535
-   *
-   * @param chunkSize packet's chunk size send to server
-   */
-  fun setWriteChunkSize(chunkSize: Int) {
-    if (!isStreaming) {
-      rtmpClient.setWriteChunkSize(chunkSize)
+  private val rtmpClient = RtmpClient(connectChecker)
+  private val streamClientListener = object: StreamClientListener {
+    override fun onRequestKeyframe() {
+      requestKeyframe()
     }
   }
+  override fun getStreamClient(): RtmpStreamClient = RtmpStreamClient(rtmpClient, streamClientListener)
 
-  override fun audioInfo(sampleRate: Int, isStereo: Boolean) {
+  constructor(context: Context, connectChecker: ConnectChecker):
+      this(context, connectChecker, Camera2Source(context), MicrophoneSource())
+
+  override fun setVideoCodecImp(codec: VideoCodec) {
+    rtmpClient.setVideoCodec(codec)
+  }
+
+  override fun setAudioCodecImp(codec: AudioCodec) {
+    rtmpClient.setAudioCodec(codec)
+  }
+
+  override fun onAudioInfoImp(sampleRate: Int, isStereo: Boolean) {
     rtmpClient.setAudioInfo(sampleRate, isStereo)
   }
 
-  override fun rtpStartStream(endPoint: String) {
+  override fun startStreamImp(endPoint: String) {
     val resolution = super.getVideoResolution()
     rtmpClient.setVideoResolution(resolution.width, resolution.height)
     rtmpClient.setFps(super.getVideoFps())
     rtmpClient.connect(endPoint)
   }
 
-  override fun rtpStopStream() {
+  override fun stopStreamImp() {
     rtmpClient.disconnect()
   }
 
-  override fun setAuthorization(user: String?, password: String?) {
-    rtmpClient.setAuthorization(user, password)
-  }
-
-  override fun onSpsPpsVpsRtp(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
+  override fun onVideoInfoImp(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
     rtmpClient.setVideoInfo(sps, pps, vps)
   }
 
-  override fun getH264DataRtp(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    rtmpClient.sendVideo(h264Buffer, info)
+  override fun getVideoDataImp(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    rtmpClient.sendVideo(videoBuffer, info)
   }
 
-  override fun getAacDataRtp(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    rtmpClient.sendAudio(aacBuffer, info)
-  }
-
-  override fun setReTries(reTries: Int) {
-    rtmpClient.setReTries(reTries)
-  }
-
-  override fun shouldRetry(reason: String): Boolean = rtmpClient.shouldRetry(reason)
-
-  override fun reConnect(delay: Long, backupUrl: String?) {
-    rtmpClient.reConnect(delay, backupUrl)
-  }
-
-  override fun hasCongestion(): Boolean = rtmpClient.hasCongestion()
-
-  override fun setLogs(enabled: Boolean) {
-    rtmpClient.setLogs(enabled)
-  }
-
-  override fun setCheckServerAlive(enabled: Boolean) {
-    rtmpClient.setCheckServerAlive(enabled)
-  }
-
-  override fun resizeCache(newSize: Int) {
-    rtmpClient.resizeCache(newSize)
-  }
-
-  override fun getCacheSize(): Int = rtmpClient.cacheSize
-
-  override fun getSentAudioFrames(): Long = rtmpClient.sentAudioFrames
-
-  override fun getSentVideoFrames(): Long = rtmpClient.sentVideoFrames
-
-  override fun getDroppedAudioFrames(): Long = rtmpClient.droppedAudioFrames
-
-  override fun getDroppedVideoFrames(): Long = rtmpClient.droppedVideoFrames
-
-  override fun resetSentAudioFrames() {
-    rtmpClient.resetSentAudioFrames()
-  }
-
-  override fun resetSentVideoFrames() {
-    rtmpClient.resetSentVideoFrames()
-  }
-
-  override fun resetDroppedAudioFrames() {
-    rtmpClient.resetDroppedAudioFrames()
-  }
-
-  override fun resetDroppedVideoFrames() {
-    rtmpClient.resetDroppedVideoFrames()
+  override fun getAudioDataImp(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    rtmpClient.sendAudio(audioBuffer, info)
   }
 }

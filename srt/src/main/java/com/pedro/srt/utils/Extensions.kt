@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,22 +16,13 @@
 
 package com.pedro.srt.utils
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.pedro.common.AudioCodec
+import com.pedro.common.VideoCodec
+import com.pedro.srt.mpeg2ts.Codec
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 
-fun ByteBuffer.toByteArray(): ByteArray {
-  return if (this.hasArray() && !isDirect) {
-    this.array()
-  } else {
-    this.rewind()
-    val byteArray = ByteArray(this.remaining())
-    this.get(byteArray)
-    byteArray
-  }
-}
 
 fun ByteBuffer.startWith(byteArray: ByteArray): Boolean {
   val startData = ByteArray(byteArray.size)
@@ -76,8 +67,29 @@ fun InputStream.readUntil(byteArray: ByteArray) {
   }
 }
 
-suspend fun onMainThread(code: () -> Unit) {
-  withContext(Dispatchers.Main) {
-    code()
+fun Int.toByteArray(): ByteArray {
+  val bytes = mutableListOf<Byte>()
+  var remainingValue = this
+  while (remainingValue >= 255) {
+    bytes.add(0xFF.toByte())
+    remainingValue -= 255
+  }
+  if (remainingValue > 0) bytes.add(remainingValue.toByte())
+  return bytes.toByteArray()
+}
+
+fun VideoCodec.toCodec(): Codec {
+  return when (this) {
+    VideoCodec.H264 -> Codec.AVC
+    VideoCodec.H265 -> Codec.HEVC
+    else -> throw IllegalArgumentException("Unsupported codec: $name")
+  }
+}
+
+fun AudioCodec.toCodec(): Codec {
+  return when (this) {
+    AudioCodec.AAC -> Codec.AAC
+    AudioCodec.OPUS -> Codec.OPUS
+    else -> throw IllegalArgumentException("Unsupported codec: $name")
   }
 }

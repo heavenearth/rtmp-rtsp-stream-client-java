@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 package com.pedro.rtsp.rtsp
 
-import com.pedro.rtsp.BuildConfig
 import com.pedro.rtsp.rtsp.commands.Command
 import com.pedro.rtsp.rtsp.commands.CommandParser
 import com.pedro.rtsp.rtsp.commands.Method
@@ -33,13 +32,13 @@ class CommandParserTest {
 
   @Test
   fun `GIVEN a SETUP command with text from server WHEN parse using udp protocol THEN change server ports`() {
-    val audioClientPorts = intArrayOf(5000, 5001)
-    val videoClientPorts = intArrayOf(5002, 5003)
-    val audioServerPorts = intArrayOf(5004, 5005)
-    val videoServerPorts = intArrayOf(5006, 5007)
+    val audioClientPorts = arrayOf<Int?>(5000, 5001)
+    val videoClientPorts = arrayOf<Int?>(5002, 5003)
+    val audioServerPorts = arrayOf<Int?>(5004, 5005)
+    val videoServerPorts = arrayOf<Int?>(5006, 5007)
 
-    val expectedAudioServerPorts = intArrayOf(5014, 5015)
-    val expectedVideoServerPorts = intArrayOf(5016, 5017)
+    val expectedAudioServerPorts = arrayOf<Int?>(5014, 5015)
+    val expectedVideoServerPorts = arrayOf<Int?>(5016, 5017)
     val serverCommandAudio = "RTSP/1.0 200 OK\r\n" +
         "Date: Fri, 15 Apr 2022 16:16:30 UTC\r\n" +
         "Expires: Fri, 15 Apr 2022 16:16:30 UTC\r\n" +
@@ -105,7 +104,6 @@ class CommandParserTest {
   fun `GIVEN pusher or player command string WHEN parse THEN get a command with cSeq and method`() {
     val pusherCommand = "OPTIONS rtsp://192.168.1.132:554/live/pedro RTSP/1.0\r\n" +
         "CSeq: 1\r\n" +
-        "User-Agent: ${BuildConfig.LIBRARY_PACKAGE_NAME} ${BuildConfig.VERSION_NAME}\r\n" +
         "\r\n"
     val command = commandParser.parseCommand(pusherCommand)
     val expectedCommand = Command(Method.OPTIONS, 1, -1, pusherCommand)

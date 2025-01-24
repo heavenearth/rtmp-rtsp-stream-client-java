@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,12 +36,18 @@ public class CodecUtil {
 
   public static final String H264_MIME = "video/avc";
   public static final String H265_MIME = "video/hevc";
+  public static final String AV1_MIME = "video/av01";
   public static final String AAC_MIME = "audio/mp4a-latm";
+  public static final String G711_MIME = "audio/g711-alaw";
   public static final String VORBIS_MIME = "audio/ogg";
   public static final String OPUS_MIME = "audio/opus";
 
-  public enum Force {
-    FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+  public enum CodecType {
+    FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE, CBR_PRIORITY
+  }
+
+  public enum CodecTypeError {
+    VIDEO_CODEC, AUDIO_CODEC
   }
 
   public static List<String> showAllCodecsInfo() {
@@ -203,7 +209,7 @@ public class CodecUtil {
     for (MediaCodecInfo mediaCodecInfo : mediaCodecInfoList) {
       if (isHardwareAccelerated(mediaCodecInfo)) {
         mediaCodecInfoHardware.add(mediaCodecInfo);
-        if (cbrPriority &&Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+        if (cbrPriority && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
             && isCBRModeSupported(mediaCodecInfo, mime)) {
           mediaCodecInfoHardwareCBR.add(mediaCodecInfo);
         }
@@ -295,11 +301,46 @@ public class CodecUtil {
     return mediaCodecInfoList;
   }
 
+  /**
+   * @return list of encoders -> hardware CBR > software CBR > hardware > software
+   */
+  public static List<MediaCodecInfo> getAllEncodersCbrPriority(String mime) {
+    List<MediaCodecInfo> mediaCodecInfoList = new ArrayList<>();
+    List<MediaCodecInfo> hardwareEncoders = getAllHardwareEncoders(mime);
+    List<MediaCodecInfo> softwareEncoders = getAllSoftwareEncoders(mime);
+
+    List<MediaCodecInfo> hardwareEncodersCbr = new ArrayList<>();
+    List<MediaCodecInfo> hardwareEncodersNoCbr = new ArrayList<>();
+    List<MediaCodecInfo> softwareEncodersCbr = new ArrayList<>();
+    List<MediaCodecInfo> softwareEncodersNoCbr = new ArrayList<>();
+
+    for (MediaCodecInfo mediaCodecInfo: hardwareEncoders) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+          && isCBRModeSupported(mediaCodecInfo, mime)) {
+        hardwareEncodersCbr.add(mediaCodecInfo);
+      } else {
+        hardwareEncodersNoCbr.add(mediaCodecInfo);
+      }
+    }
+
+    for (MediaCodecInfo mediaCodecInfo: softwareEncoders) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+          && isCBRModeSupported(mediaCodecInfo, mime)) {
+        softwareEncodersCbr.add(mediaCodecInfo);
+      } else {
+        softwareEncodersNoCbr.add(mediaCodecInfo);
+      }
+    }
+    mediaCodecInfoList.addAll(hardwareEncodersCbr);
+    mediaCodecInfoList.addAll(softwareEncodersCbr);
+    mediaCodecInfoList.addAll(hardwareEncodersNoCbr);
+    mediaCodecInfoList.addAll(softwareEncodersNoCbr);
+    return mediaCodecInfoList;
+  }
+
   public static List<MediaCodecInfo> getAllEncoders(String mime, boolean hardwarePriority) {
     return getAllEncoders(mime, hardwarePriority, false);
   }
-
-
 
     /**
      * choose decoder by mime.

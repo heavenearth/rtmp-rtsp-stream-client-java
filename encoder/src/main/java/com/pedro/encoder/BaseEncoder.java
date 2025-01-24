@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,11 +27,14 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
+import com.pedro.encoder.audio.G711Codec;
 import com.pedro.encoder.utils.CodecUtil;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Created by pedro on 18/09/19.
@@ -39,55 +42,80 @@ import java.util.concurrent.BlockingQueue;
 public abstract class BaseEncoder implements EncoderCallback {
 
   protected String TAG = "BaseEncoder";
+  protected final G711Codec g711Codec = new G711Codec();
   private final MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
   private HandlerThread handlerThread;
+  private ExecutorService executorService;
   protected BlockingQueue<Frame> queue = new ArrayBlockingQueue<>(80);
   protected MediaCodec codec;
-  protected static long presentTimeUs;
+  protected long presentTimeUs;
   protected volatile boolean running = false;
   protected boolean isBufferMode = true;
-  protected CodecUtil.Force force = CodecUtil.Force.FIRST_COMPATIBLE_FOUND;
+  protected CodecUtil.CodecType codecType = CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND;
   private MediaCodec.Callback callback;
   private long oldTimeStamp = 0L;
   protected boolean shouldReset = true;
+  protected boolean prepared = false;
   private Handler handler;
+  private EncoderErrorCallback encoderErrorCallback;
+  protected String type;
+  protected CodecUtil.CodecTypeError typeError;
+  protected TimestampMode timestampMode = TimestampMode.CLOCK;
+
+  public void setEncoderErrorCallback(EncoderErrorCallback encoderErrorCallback) {
+    this.encoderErrorCallback = encoderErrorCallback;
+  }
+
+  public String getType() {
+    return type;
+  }
+
+  public void setType(String type) {
+    this.type = type;
+  }
+
+  public void setTimestampMode(TimestampMode timestampMode) {
+    if (isRunning()) return;
+    this.timestampMode = timestampMode;
+  }
 
   public void restart() {
     start(false);
     initCodec();
   }
 
-  public void start() {
-    if (presentTimeUs == 0) {
-      presentTimeUs = System.nanoTime() / 1000;
-    }
+  public void start(long startTs) {
+    if (!prepared) throw new IllegalStateException(TAG + " not prepared yet. You must call prepare method before start it");
+    presentTimeUs = startTs;
     start(true);
     initCodec();
   }
 
+  public void start() {
+    start(System.nanoTime() / 1000);
+  }
+
   protected void setCallback() {
-    handlerThread = new HandlerThread(TAG);
-    handlerThread.start();
-    handler = new Handler(handlerThread.getLooper());
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !type.equals(CodecUtil.G711_MIME)) {
+      handlerThread = new HandlerThread(TAG);
+      handlerThread.start();
+      handler = new Handler(handlerThread.getLooper());
       createAsyncCallback();
       codec.setCallback(callback, handler);
     }
   }
 
   private void initCodec() {
-    codec.start();
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-      handler.post(new Runnable() {
-        @Override
-        public void run() {
-          while (running) {
-            try {
-              getDataFromEncoder();
-            } catch (IllegalStateException e) {
-              Log.i(TAG, "Encoding error", e);
-              reloadCodec();
-            }
+    if (!type.equals(CodecUtil.G711_MIME)) codec.start();
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || type.equals(CodecUtil.G711_MIME)) {
+      executorService = Executors.newSingleThreadExecutor();
+      executorService.submit(() -> {
+        while (running) {
+          try {
+            getDataFromEncoder();
+          } catch (IllegalStateException e) {
+            Log.i(TAG, "Encoding error", e);
+            reloadCodec(e);
           }
         }
       });
@@ -95,7 +123,7 @@ public abstract class BaseEncoder implements EncoderCallback {
     running = true;
   }
 
-  public abstract void reset();
+  public abstract boolean reset();
 
   public abstract void start(boolean resetTs);
 
@@ -109,10 +137,14 @@ public abstract class BaseEncoder implements EncoderCallback {
     }
   }
 
-  private void reloadCodec() {
+  private void reloadCodec(IllegalStateException e) {
     //Sometimes encoder crash, we will try recover it. Reset encoder a time if crash
+    EncoderErrorCallback callback = encoderErrorCallback;
+    if (callback != null) {
+      shouldReset = callback.onEncodeError(typeError, e);
+    }
     if (shouldReset) {
-      Log.e(TAG, "Encoder crashed, trying to recover it");
+      Log.e(typeError.name(), "Encoder crashed, trying to recover it");
       reset();
     }
   }
@@ -145,6 +177,7 @@ public abstract class BaseEncoder implements EncoderCallback {
         handlerThread.getLooper().getThread().join(500);
       } catch (Exception ignored) { }
     }
+    if (executorService != null) executorService.shutdownNow();
     queue.clear();
     queue = new ArrayBlockingQueue<>(80);
     try {
@@ -154,12 +187,17 @@ public abstract class BaseEncoder implements EncoderCallback {
     } catch (IllegalStateException | NullPointerException e) {
       codec = null;
     }
+    prepared = false;
     oldTimeStamp = 0L;
   }
 
   protected abstract MediaCodecInfo chooseEncoder(String mime);
 
   protected void getDataFromEncoder() throws IllegalStateException {
+    if (type.equals(CodecUtil.G711_MIME)) {
+      processG711();
+      return;
+    }
     if (isBufferMode) {
       int inBufferIndex = codec.dequeueInputBuffer(0);
       if (inBufferIndex >= 0) {
@@ -213,8 +251,8 @@ public abstract class BaseEncoder implements EncoderCallback {
     mediaCodec.releaseOutputBuffer(outBufferIndex, false);
   }
 
-  public void setForce(CodecUtil.Force force) {
-    this.force = force;
+  public void forceCodecType(CodecUtil.CodecType codecType) {
+    this.codecType = codecType;
   }
 
   public boolean isRunning() {
@@ -254,7 +292,7 @@ public abstract class BaseEncoder implements EncoderCallback {
           inputAvailable(mediaCodec, inBufferIndex);
         } catch (IllegalStateException e) {
           Log.i(TAG, "Encoding error", e);
-          reloadCodec();
+          reloadCodec(e);
         }
       }
 
@@ -265,13 +303,15 @@ public abstract class BaseEncoder implements EncoderCallback {
           outputAvailable(mediaCodec, outBufferIndex, bufferInfo);
         } catch (IllegalStateException e) {
           Log.i(TAG, "Encoding error", e);
-          reloadCodec();
+          reloadCodec(e);
         }
       }
 
       @Override
       public void onError(@NonNull MediaCodec mediaCodec, @NonNull MediaCodec.CodecException e) {
         Log.e(TAG, "Error", e);
+        EncoderErrorCallback callback = encoderErrorCallback;
+        if (callback != null) callback.onCodecError(typeError, e);
       }
 
       @Override
@@ -280,5 +320,22 @@ public abstract class BaseEncoder implements EncoderCallback {
         formatChanged(mediaCodec, mediaFormat);
       }
     };
+  }
+
+  private void processG711() {
+    try {
+      Frame frame = getInputFrame();
+      while (frame == null) frame = getInputFrame();
+      byte[] data = g711Codec.encode(frame.getBuffer(), frame.getOffset(), frame.getSize());
+      ByteBuffer buffer = ByteBuffer.wrap(data, 0, data.length);
+      bufferInfo.presentationTimeUs = calculatePts(frame, presentTimeUs);
+      bufferInfo.size = data.length;
+      bufferInfo.offset = 0;
+      sendBuffer(buffer, bufferInfo);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (NullPointerException | IndexOutOfBoundsException e) {
+      Log.i(TAG, "Encoding error", e);
+    }
   }
 }

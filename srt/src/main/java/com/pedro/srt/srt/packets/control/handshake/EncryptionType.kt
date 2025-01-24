@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,6 @@ enum class EncryptionType(val value: Int) {
   NONE(0), AES128(2), AES192(3), AES256(4);
 
   companion object {
-    infix fun from(value: Int): EncryptionType = EncryptionType.values().firstOrNull { it.value == value } ?: throw IOException("unknown encryption: $value")
+    infix fun from(value: Int): EncryptionType = entries.firstOrNull { it.value == value } ?: throw IOException("unknown encryption: $value")
   }
 }

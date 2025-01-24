@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,5 +20,7 @@ package com.pedro.srt.mpeg2ts
  * Created by pedro on 26/8/23.
  */
 enum class Codec(val value: Byte) {
-  AAC(0x0F), AVC(0x1B), HEVC(0x24)
+  AAC(0x0F), AVC(0x1B), HEVC(0x24), OPUS(0x06);
+
+  fun isAudio(): Boolean = this == AAC || this == OPUS
 }

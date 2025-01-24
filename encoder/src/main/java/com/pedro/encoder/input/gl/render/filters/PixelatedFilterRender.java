@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,10 +116,6 @@ public class PixelatedFilterRender extends BaseFilterRender {
   public void setPixelated(float pixelated) {
     if (pixelated > 1.0f) {
       this.pixelated = 1.0f;
-    } else if (pixelated < 0.0f) {
-      this.pixelated = 0.0f;
-    } else {
-      this.pixelated = pixelated;
-    }
+    } else this.pixelated = Math.max(pixelated, 0.0f);
   }
 }

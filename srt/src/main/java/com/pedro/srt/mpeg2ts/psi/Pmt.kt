@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,18 +64,37 @@ class Pmt(
   }
 
   private fun generateProgramDescriptor(codec: Codec): ByteArray {
-    return if (codec == Codec.HEVC) {
-      val bytes = ByteArray(6)
-      bytes[0] = 0x05
-      bytes[1] = 0x04
+    return when (codec) {
+      Codec.HEVC -> {
+        val bytes = ByteArray(6)
+        bytes[0] = 0x05
+        bytes[1] = 0x04
 
-      bytes[2] = 'H'.code.toByte()
-      bytes[3] = 'E'.code.toByte()
-      bytes[4] = 'V'.code.toByte()
-      bytes[5] = 'C'.code.toByte()
-      bytes
-    } else {
-      byteArrayOf()
+        bytes[2] = 'H'.code.toByte()
+        bytes[3] = 'E'.code.toByte()
+        bytes[4] = 'V'.code.toByte()
+        bytes[5] = 'C'.code.toByte()
+        bytes
+      }
+      Codec.OPUS -> {
+        val bytes = ByteArray(10)
+        bytes[0] = 0x05
+        bytes[1] = 0x04
+
+        bytes[2] = 'O'.code.toByte()
+        bytes[3] = 'p'.code.toByte()
+        bytes[4] = 'u'.code.toByte()
+        bytes[5] = 's'.code.toByte()
+
+        bytes[6] = 0x7F
+        bytes[7] = 0x02
+        bytes[8] = 0x80.toByte()
+        bytes[9] = 2 //channels, always stereo
+        bytes
+      }
+      else -> {
+        byteArrayOf()
+      }
     }
   }
 
@@ -84,6 +103,7 @@ class Pmt(
     service.tracks.forEach { track ->
       size += 5
       if (track.codec == Codec.HEVC) size += 6
+      else if (track.codec == Codec.OPUS) size += 10
     }
     return size
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,19 +17,25 @@
 package com.pedro.srt.srt
 
 import android.util.Log
+import com.pedro.common.AudioCodec
+import com.pedro.common.TimeUtils
+import com.pedro.common.VideoCodec
 import com.pedro.srt.mpeg2ts.MpegTsPacket
 import com.pedro.srt.srt.packets.DataPacket
 import com.pedro.srt.srt.packets.SrtPacket
 import com.pedro.srt.srt.packets.control.Ack2
+import com.pedro.srt.srt.packets.control.KeepAlive
 import com.pedro.srt.srt.packets.control.Shutdown
+import com.pedro.srt.srt.packets.control.handshake.EncryptionType
 import com.pedro.srt.srt.packets.control.handshake.Handshake
+import com.pedro.srt.srt.packets.data.KeyBasedEncryption
 import com.pedro.srt.utils.Constants
+import com.pedro.srt.utils.EncryptInfo
+import com.pedro.srt.utils.EncryptionUtil
 import com.pedro.srt.utils.SrtSocket
-import com.pedro.srt.utils.TimeUtils
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
-import java.net.NetworkInterface
 import kotlin.random.Random
 
 /**
@@ -48,8 +54,24 @@ class CommandsManager {
   var startTS = 0L //microSeconds
   var audioDisabled = false
   var videoDisabled = false
+  var host = ""
   //Avoid write a packet in middle of other.
   private val writeSync = Mutex(locked = false)
+  private var encryptor: EncryptionUtil? = null
+  var videoCodec = VideoCodec.H264
+  var audioCodec = AudioCodec.AAC
+
+  fun setPassphrase(passphrase: String, type: EncryptionType) {
+    encryptor = if (passphrase.isEmpty() || type == EncryptionType.NONE) null else EncryptionUtil(type, passphrase)
+  }
+
+  fun getEncryptInfo(): EncryptInfo? {
+    return encryptor?.getEncryptInfo()
+  }
+
+  fun getEncryptType(): EncryptionType {
+    return encryptor?.type ?: EncryptionType.NONE
+  }
 
   fun loadStartTs() {
     startTS = TimeUtils.getCurrentTimeMicro()
@@ -63,7 +85,7 @@ class CommandsManager {
   suspend fun writeHandshake(socket: SrtSocket?, handshake: Handshake = Handshake()) {
     writeSync.withLock {
       handshake.initialPacketSequence = sequenceNumber
-      handshake.ipAddress = getIPAddress()
+      handshake.ipAddress = host
       handshake.write(getTs(), 0)
       Log.i(TAG, handshake.toString())
       socket?.write(handshake)
@@ -71,7 +93,7 @@ class CommandsManager {
   }
 
   @Throws(IOException::class)
-  fun readHandshake(socket: SrtSocket?): Handshake {
+  suspend fun readHandshake(socket: SrtSocket?): Handshake {
     val handshakeBuffer = socket?.readBuffer() ?: throw IOException("read buffer failed, socket disconnected")
     val handshake = SrtPacket.getSrtPacket(handshakeBuffer)
     if (handshake is Handshake) {
@@ -87,17 +109,18 @@ class CommandsManager {
     writeSync.withLock {
       if (sequenceNumber.toUInt() > 0x7FFFFFFFu) sequenceNumber = 0
       val dataPacket = DataPacket(
-        sequenceNumber = sequenceNumber++,
+        encryption = if (encryptor != null) KeyBasedEncryption.PAIR_KEY else KeyBasedEncryption.NONE,
+        sequenceNumber = sequenceNumber,
         packetPosition = packet.packetPosition,
         messageNumber = messageNumber++,
-        payload = packet.buffer,
+        payload = encryptor?.encrypt(packet.buffer, sequenceNumber) ?: packet.buffer,
         ts = getTs(),
         socketId = socketId
       )
+      sequenceNumber++
       packetHandlingQueue.add(dataPacket)
       dataPacket.write()
       socket?.write(dataPacket)
-      Log.i(TAG, dataPacket.toString())
       return dataPacket.getSize()
     }
   }
@@ -139,36 +162,26 @@ class CommandsManager {
     }
   }
 
+  @Throws(IOException::class)
+  suspend fun writeKeepAlive(socket: SrtSocket?) {
+    writeSync.withLock {
+      val keepAlive = KeepAlive()
+      keepAlive.write(getTs(), socketId)
+      socket?.write(keepAlive)
+    }
+  }
+
   fun reset() {
     sequenceNumber = generateInitialSequence()
     messageNumber = 1
     MTU = Constants.MTU
     socketId = 0
     startTS = 0L
+    host = ""
     packetHandlingQueue.clear()
   }
 
   private fun generateInitialSequence(): Int {
     return Random.nextInt(0, Int.MAX_VALUE)
   }
-
-  private fun getIPAddress(): String {
-    val interfaces: List<NetworkInterface> = NetworkInterface.getNetworkInterfaces().toList()
-    val vpnInterfaces = interfaces.filter { it.displayName.contains("tun") }
-    val address: String by lazy { interfaces.findAddress().firstOrNull() ?: "0.0.0.0" }
-    return if (vpnInterfaces.isNotEmpty()) {
-      val vpnAddresses = vpnInterfaces.findAddress()
-      vpnAddresses.firstOrNull() ?: address
-    } else {
-      address
-    }
-  }
-
-  private fun List<NetworkInterface>.findAddress(): List<String?> = this.asSequence()
-    .map { addresses -> addresses.inetAddresses.asSequence() }
-    .flatten()
-    .filter { address -> !address.isLoopbackAddress }
-    .map { it.hostAddress }
-    .filter { address -> address?.contains(":") == false }
-    .toList()
 }

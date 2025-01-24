@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,7 @@ package com.pedro.encoder.utils.gl;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.PorterDuff;
 import android.graphics.Typeface;
 import android.util.Log;
 
@@ -48,9 +46,9 @@ public class TextStreamObject extends StreamObjectBase {
     return imageBitmap != null ? imageBitmap.getHeight() : 0;
   }
 
-  public void load(String text, float textSize, int textColor, Typeface typeface) {
+  public void load(String text, float textSize, int textColor, int backgroundColor, Typeface typeface) {
     numFrames = 1;
-    imageBitmap = textAsBitmap(text, textSize, textColor, typeface);
+    imageBitmap = textAsBitmap(text, textSize, textColor, backgroundColor, typeface);
     Log.i(TAG, "finish load text");
   }
 
@@ -59,7 +57,7 @@ public class TextStreamObject extends StreamObjectBase {
     if (imageBitmap != null && !imageBitmap.isRecycled()) imageBitmap.recycle();
   }
 
-  private Bitmap textAsBitmap(String text, float textSize, int textColor, Typeface typeface) {
+  private Bitmap textAsBitmap(String text, float textSize, int textColor, int backgroundColor, Typeface typeface) {
     Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     paint.setTextSize(textSize);
     paint.setColor(textColor);
@@ -72,7 +70,7 @@ public class TextStreamObject extends StreamObjectBase {
     int height = (int) (baseline + paint.descent() + 0.5f);
     Bitmap image = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
     Canvas canvas = new Canvas(image);
-    canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+    canvas.drawColor(backgroundColor);
 
     canvas.drawText(text, 0, baseline, paint);
     return image;

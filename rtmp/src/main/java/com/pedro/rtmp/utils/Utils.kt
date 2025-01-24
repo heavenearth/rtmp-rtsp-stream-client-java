@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 package com.pedro.rtmp.utils
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -25,12 +23,6 @@ import java.nio.ByteBuffer
 /**
  * Created by pedro on 20/04/21.
  */
-
-suspend fun onMainThread(code: () -> Unit) {
-  withContext(Dispatchers.Main) {
-    code()
-  }
-}
 
 fun InputStream.readUntil(byteArray: ByteArray) {
   var bytesRead = 0

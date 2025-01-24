@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package com.pedro.srt.srt.packets.control.handshake.extension
 
 import com.pedro.srt.srt.packets.SrtPacket
+import com.pedro.srt.utils.EncryptInfo
 import com.pedro.srt.utils.writeUInt16
 import com.pedro.srt.utils.writeUInt32
 
@@ -25,11 +26,12 @@ import com.pedro.srt.utils.writeUInt32
  *
  */
 data class HandshakeExtension(
-  private val version: String = "1.4.4",
+  private val version: String = "1.5.3",
   private val flags: Int = ExtensionContentFlag.REXMITFLG.value or ExtensionContentFlag.CRYPT.value,
   private val receiverDelay: Int = 120,
   private val senderDelay: Int = 0,
-  private val path: String = ""
+  private val path: String = "",
+  private val encryptInfo: EncryptInfo? = null
 ): SrtPacket() {
 
   fun write() {
@@ -42,9 +44,17 @@ data class HandshakeExtension(
     buffer.writeUInt16(senderDelay)
 
     buffer.writeUInt16(ExtensionType.SRT_CMD_SID.value)
-    val data = fixPathData("publish:$path".toByteArray(Charsets.UTF_8))
+    val data = fixPathData(path.toByteArray(Charsets.UTF_8))
     buffer.writeUInt16(data.size / 4)
     buffer.write(data)
+    //encrypted info
+    if (encryptInfo != null) {
+      buffer.writeUInt16(ExtensionType.SRT_CMD_KM_REQ.value)
+      val keyMaterialMessage = KeyMaterialMessage(encryptInfo)
+      val encryptedData = keyMaterialMessage.getData()
+      buffer.writeUInt16(encryptedData.size / 4)
+      buffer.write(encryptedData)
+    }
   }
 
   private fun getVersionData(version: String): ByteArray {

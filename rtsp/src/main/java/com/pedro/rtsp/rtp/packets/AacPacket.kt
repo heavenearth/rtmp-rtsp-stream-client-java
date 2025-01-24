@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 package com.pedro.rtsp.rtp.packets
 
-import android.media.MediaCodec
+import com.pedro.common.frame.MediaFrame
+import com.pedro.common.removeInfo
 import com.pedro.rtsp.rtsp.RtpFrame
 import com.pedro.rtsp.utils.RtpConstants
-import java.nio.ByteBuffer
 import kotlin.experimental.and
 import kotlin.experimental.or
 
@@ -28,10 +28,8 @@ import kotlin.experimental.or
  *
  * RFC 3640.
  */
-class AacPacket(
-  sampleRate: Int
-): BasePacket(
-  sampleRate.toLong(),
+class AacPacket: BasePacket(
+  0,
   RtpConstants.payloadType + RtpConstants.trackAudio
 ) {
 
@@ -39,16 +37,24 @@ class AacPacket(
     channelIdentifier = RtpConstants.trackAudio
   }
 
-  override fun createAndSendPacket(
-    byteBuffer: ByteBuffer,
-    bufferInfo: MediaCodec.BufferInfo,
-    callback: (RtpFrame) -> Unit
+  fun setAudioInfo(sampleRate: Int) {
+    setClock(sampleRate.toLong())
+  }
+
+  override suspend fun createAndSendPacket(
+    mediaFrame: MediaFrame,
+    callback: suspend (List<RtpFrame>) -> Unit
   ) {
-    val length = bufferInfo.size - byteBuffer.position()
-    if (length > 0) {
-      val buffer = getBuffer(length + RtpConstants.RTP_HEADER_LENGTH + 4)
-      byteBuffer.get(buffer, RtpConstants.RTP_HEADER_LENGTH + 4, length)
-      val ts = bufferInfo.presentationTimeUs * 1000
+    val fixedBuffer = mediaFrame.data.removeInfo(mediaFrame.info)
+    val length = fixedBuffer.remaining()
+    val maxPayload = maxPacketSize - (RtpConstants.RTP_HEADER_LENGTH + 4)
+    val ts = mediaFrame.info.timestamp * 1000
+    var sum = 0
+    val frames = mutableListOf<RtpFrame>()
+    while (sum < length) {
+      val size = if (length - sum < maxPayload) length - sum else maxPayload
+      val buffer = getBuffer(size + RtpConstants.RTP_HEADER_LENGTH + 4)
+      fixedBuffer.get(buffer, RtpConstants.RTP_HEADER_LENGTH + 4, size)
       markPacket(buffer)
       val rtpTs = updateTimeStamp(buffer, ts)
 
@@ -59,15 +65,17 @@ class AacPacket(
       buffer[RtpConstants.RTP_HEADER_LENGTH + 1] = 0x10.toByte()
 
       // AU-size
-      buffer[RtpConstants.RTP_HEADER_LENGTH + 2] = (length shr 5).toByte()
-      buffer[RtpConstants.RTP_HEADER_LENGTH + 3] = (length shl 3).toByte()
+      buffer[RtpConstants.RTP_HEADER_LENGTH + 2] = (size shr 5).toByte()
+      buffer[RtpConstants.RTP_HEADER_LENGTH + 3] = (size shl 3).toByte()
 
       // AU-Index
       buffer[RtpConstants.RTP_HEADER_LENGTH + 3] = buffer[RtpConstants.RTP_HEADER_LENGTH + 3] and 0xF8.toByte()
       buffer[RtpConstants.RTP_HEADER_LENGTH + 3] = buffer[RtpConstants.RTP_HEADER_LENGTH + 3] or 0x00
       updateSeq(buffer)
-      val rtpFrame = RtpFrame(buffer, rtpTs, RtpConstants.RTP_HEADER_LENGTH + length + 4, rtpPort, rtcpPort, channelIdentifier)
-      callback(rtpFrame)
+      val rtpFrame = RtpFrame(buffer, rtpTs, RtpConstants.RTP_HEADER_LENGTH + size + 4, channelIdentifier)
+      sum += size
+      frames.add(rtpFrame)
     }
+    if (frames.isNotEmpty()) callback(frames)
   }
 }

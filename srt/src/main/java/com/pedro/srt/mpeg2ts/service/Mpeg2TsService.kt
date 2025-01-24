@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,10 @@ data class Mpeg2TsService(
     val pid = Pid.generatePID()
     tracks.add(Track(codec, pid))
     if (pcrPid == null) pcrPid = pid
-    else if (codec != Codec.AAC) pcrPid = pid
+    else if (!codec.isAudio()) pcrPid = pid
+  }
+
+  fun generatePmt() {
     if (pmt == null) {
       pmt = Pmt(
         Pid.generatePID().toInt(),
@@ -47,8 +50,12 @@ data class Mpeg2TsService(
     }
   }
 
-  fun clear() {
+  fun clearTracks() {
     tracks.clear()
+  }
+
+  fun clear() {
+    clearTracks()
     pmt = null
     pcrPid = null
   }

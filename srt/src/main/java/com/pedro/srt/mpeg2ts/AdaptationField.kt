@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -88,13 +88,14 @@ data class AdaptationField(
         return buffer.array()
     }
 
+    fun getSize(): Int = length
+
     private fun calculateSize(): Int {
         return 2 + (if (pcr != null) 6 else 0) + (if (opcr != null) 6 else 0) + 
             (if (spliceCountdown != null) 1 else 0) +
             (if (transportPrivateDataLength > 0) transportPrivateDataLength + 1 else 0) +
             (adaptationExtension?.size ?: 0) + (stuffingBytes?.size ?: 0)
     }
-    fun getSize(): Int = length
 
     private fun addClockReference(buffer: ByteBuffer, timestamp: Long) {
         val pcrBase =

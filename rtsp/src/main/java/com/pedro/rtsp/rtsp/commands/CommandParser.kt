@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ class CommandParser {
     private const val TAG = "CommandParser"
   }
 
-  fun loadServerPorts(command: Command, protocol: Protocol, audioClientPorts: IntArray,
-    videoClientPorts: IntArray, audioServerPorts: IntArray, videoServerPorts: IntArray): Boolean {
+  fun loadServerPorts(command: Command, protocol: Protocol, audioClientPorts: Array<Int?>,
+    videoClientPorts: Array<Int?>, audioServerPorts: Array<Int?>, videoServerPorts: Array<Int?>): Boolean {
     var isAudio = true
     if (command.method == Method.SETUP && protocol == Protocol.UDP) {
       val clientPattern = Pattern.compile("client_port=([0-9]+)-([0-9]+)")

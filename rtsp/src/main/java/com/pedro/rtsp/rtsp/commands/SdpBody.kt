@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,6 +42,25 @@ object SdpBody {
       -1,  // 14
       -1)
 
+  /**
+   * Opus only support sample rate 48khz and stereo channel but Android encoder accept others values.
+   * The encoder internally transform the sample rate to 48khz and channels to stereo
+   */
+  fun createOpusBody(trackAudio: Int): String {
+    val payload = RtpConstants.payloadType + trackAudio
+    return "m=audio 0 RTP/AVP ${payload}\r\n" +
+        "a=rtpmap:$payload OPUS/48000/2\r\n" +
+        "a=control:streamid=$trackAudio\r\n"
+  }
+
+  fun createG711Body(trackAudio: Int, sampleRate: Int, isStereo: Boolean): String {
+    val channel = if (isStereo) 2 else 1
+    val payload = RtpConstants.payloadTypeG711
+    return "m=audio 0 RTP/AVP ${payload}\r\n" +
+        "a=rtpmap:$payload PCMA/$sampleRate/$channel\r\n" +
+        "a=control:streamid=$trackAudio\r\n"
+  }
+
   fun createAacBody(trackAudio: Int, sampleRate: Int, isStereo: Boolean): String {
     val sampleRateNum = AUDIO_SAMPLING_RATES.toList().indexOf(sampleRate)
     val channel = if (isStereo) 2 else 1
@@ -51,6 +70,14 @@ object SdpBody {
         "a=rtpmap:$payload MPEG4-GENERIC/$sampleRate/$channel\r\n" +
         "a=fmtp:$payload profile-level-id=1; mode=AAC-hbr; config=${Integer.toHexString(config)}; sizelength=13; indexlength=3; indexdeltalength=3\r\n" +
         "a=control:streamid=$trackAudio\r\n"
+  }
+
+  fun createAV1Body(trackVideo: Int): String {
+    val payload = RtpConstants.payloadType + trackVideo
+    return "m=video 0 RTP/AVP $payload\r\n" +
+        "a=rtpmap:$payload AV1/${RtpConstants.clockVideoFrequency}\r\n" +
+        "a=fmtp:$payload profile=0; level-idx=0;\r\n" +
+        "a=control:streamid=$trackVideo\r\n"
   }
 
   fun createH264Body(trackVideo: Int, sps: String, pps: String): String {

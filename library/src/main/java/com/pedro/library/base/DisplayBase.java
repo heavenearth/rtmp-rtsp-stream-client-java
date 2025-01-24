@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,20 +30,20 @@ import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.view.Surface;
-import android.view.SurfaceView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
-import com.pedro.encoder.Frame;
+import com.pedro.common.AudioCodec;
+import com.pedro.common.VideoCodec;
+import com.pedro.encoder.EncoderErrorCallback;
+import com.pedro.encoder.TimestampMode;
 import com.pedro.encoder.audio.AudioEncoder;
-import com.pedro.encoder.audio.GetAacData;
+import com.pedro.encoder.audio.GetAudioData;
 import com.pedro.encoder.input.audio.CustomAudioEffect;
 import com.pedro.encoder.input.audio.GetMicrophoneData;
 import com.pedro.encoder.input.audio.MicrophoneManager;
-import com.pedro.encoder.input.audio.MicrophoneManagerManual;
-import com.pedro.encoder.input.audio.MicrophoneMode;
 import com.pedro.encoder.utils.CodecUtil;
 import com.pedro.encoder.video.FormatVideoEncoder;
 import com.pedro.encoder.video.GetVideoData;
@@ -52,8 +52,9 @@ import com.pedro.library.base.recording.BaseRecordController;
 import com.pedro.library.base.recording.RecordController;
 import com.pedro.library.util.AndroidMuxerRecordController;
 import com.pedro.library.util.FpsListener;
+import com.pedro.library.util.streamclient.StreamBaseClient;
 import com.pedro.library.view.GlInterface;
-import com.pedro.library.view.OffScreenGlThread;
+import com.pedro.library.view.GlStreamInterface;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -69,58 +70,53 @@ import java.nio.ByteBuffer;
  * Created by pedro on 9/08/17.
  */
 @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrophoneData {
+public abstract class DisplayBase {
 
-  private OffScreenGlThread glInterface;
+  private GlInterface glInterface;
   private MediaProjection mediaProjection;
   private final MediaProjectionManager mediaProjectionManager;
   protected VideoEncoder videoEncoder;
-  private MicrophoneManager microphoneManager;
+  private final MicrophoneManager microphoneManager;
   private AudioEncoder audioEncoder;
   private boolean streaming = false;
-  protected SurfaceView surfaceView;
   private VirtualDisplay virtualDisplay;
   private int dpi = 320;
   private int resultCode = -1;
   private Intent data;
+  private MediaProjection.Callback mediaProjectionCallback = new MediaProjection.Callback() { };
   protected BaseRecordController recordController;
   private final FpsListener fpsListener = new FpsListener();
+  private boolean videoInitialized = false;
   private boolean audioInitialized = false;
 
   public DisplayBase(Context context, boolean useOpengl) {
     if (useOpengl) {
-      glInterface = new OffScreenGlThread(context);
-      glInterface.init();
+      glInterface = new GlStreamInterface(context);
     }
     mediaProjectionManager =
         ((MediaProjectionManager) context.getSystemService(MEDIA_PROJECTION_SERVICE));
-    this.surfaceView = null;
-    videoEncoder = new VideoEncoder(this);
-    audioEncoder = new AudioEncoder(this);
-    //Necessary use same thread to read input buffer and encode it with internal audio or audio is choppy.
-    setMicrophoneMode(MicrophoneMode.SYNC);
+    microphoneManager = new MicrophoneManager(getMicrophoneData);
+    videoEncoder = new VideoEncoder(getVideoData);
+    audioEncoder = new AudioEncoder(getAudioData);
     recordController = new AndroidMuxerRecordController();
   }
 
   /**
-   * Must be called before prepareAudio.
-   *
-   * @param microphoneMode mode to work accord to audioEncoder. By default SYNC:
-   * SYNC using same thread. This mode could solve choppy audio or audio frame discarded.
-   * ASYNC using other thread.
+   * Set the mode to calculate timestamp. By default CLOCK.
+   * Must be called before startRecord/startStream or it will be ignored.
    */
-  public void setMicrophoneMode(MicrophoneMode microphoneMode) {
-    switch (microphoneMode) {
-      case SYNC:
-        microphoneManager = new MicrophoneManagerManual();
-        audioEncoder = new AudioEncoder(this);
-        audioEncoder.setGetFrame(((MicrophoneManagerManual) microphoneManager).getGetFrame());
-        break;
-      case ASYNC:
-        microphoneManager = new MicrophoneManager(this);
-        audioEncoder = new AudioEncoder(this);
-        break;
-    }
+  public void setTimestampMode(TimestampMode timestampModeVideo, TimestampMode timestampModeAudio) {
+    videoEncoder.setTimestampMode(timestampModeVideo);
+    audioEncoder.setTimestampMode(timestampModeAudio);
+  }
+
+  /**
+   * Set a callback to know errors related with Video/Audio encoders
+   * @param encoderErrorCallback callback to use, null to remove
+   */
+  public void setEncoderErrorCallback(EncoderErrorCallback encoderErrorCallback) {
+    videoEncoder.setEncoderErrorCallback(encoderErrorCallback);
+    audioEncoder.setEncoderErrorCallback(encoderErrorCallback);
   }
 
   /**
@@ -138,14 +134,6 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   }
 
   /**
-   * Basic auth developed to work with Wowza. No tested with other server
-   *
-   * @param user auth.
-   * @param password auth.
-   */
-  public abstract void setAuthorization(String user, String password);
-
-  /**
    * Call this method before use @startStream. If not you will do a stream without video.
    *
    * @param width resolution in px.
@@ -157,23 +145,33 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
    * encoder.
    * NOTE: Rotation with encoder is silence ignored in some devices.
    * @param dpi of your screen device.
+   * @param profile codec value from MediaCodecInfo.CodecProfileLevel class
+   * @param level codec value from MediaCodecInfo.CodecProfileLevel class
    * @return true if success, false if you get a error (Normally because the encoder selected
    * doesn't support any configuration seated or your device hasn't a H264 encoder).
    */
   public boolean prepareVideo(int width, int height, int fps, int bitrate, int rotation, int dpi,
-      int avcProfile, int avcProfileLevel, int iFrameInterval) {
+      int profile, int level, int iFrameInterval) {
     this.dpi = dpi;
-    boolean result =
+    videoInitialized =
         videoEncoder.prepareVideoEncoder(width, height, fps, bitrate, rotation, iFrameInterval,
-            FormatVideoEncoder.SURFACE, avcProfile, avcProfileLevel);
+            FormatVideoEncoder.SURFACE, profile, level);
     if (glInterface != null) {
+      int w = width;
+      int h = height;
+      boolean isPortrait = false;
       if (rotation == 90 || rotation == 270) {
-        glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
-      } else {
-        glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
+        h = width;
+        w = height;
+        isPortrait = true;
+      }
+      glInterface.setEncoderSize(w, h);
+      if (glInterface instanceof GlStreamInterface glStreamInterface) {
+        glStreamInterface.setPreviewResolution(w, h);
+        glStreamInterface.setIsPortrait(isPortrait);
       }
     }
-    return result;
+    return videoInitialized;
   }
 
   public boolean prepareVideo(int width, int height, int fps, int bitrate, int rotation, int dpi) {
@@ -184,7 +182,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     return prepareVideo(width, height, 30, bitrate, 0, 320);
   }
 
-  protected abstract void prepareAudioRtp(boolean isStereo, int sampleRate);
+  protected abstract void onAudioInfoImp(boolean isStereo, int sampleRate);
 
   /**
    * Call this method before use @startStream. If not you will do a stream without audio.
@@ -203,9 +201,8 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     if (!microphoneManager.createMicrophone(audioSource, sampleRate, isStereo, echoCanceler, noiseSuppressor)) {
       return false;
     }
-    prepareAudioRtp(isStereo, sampleRate);
-    audioInitialized = audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo,
-        microphoneManager.getMaxInputSize());
+    onAudioInfoImp(isStereo, sampleRate);
+    audioInitialized = audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo);
     return audioInitialized;
   }
 
@@ -234,7 +231,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     if (mediaProjection == null) {
       mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
     }
-
+    mediaProjection.registerCallback(mediaProjectionCallback, null);
     AudioPlaybackCaptureConfiguration config =
         new AudioPlaybackCaptureConfiguration.Builder(mediaProjection).addMatchingUsage(
             AudioAttributes.USAGE_MEDIA)
@@ -245,9 +242,8 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
         noiseSuppressor)) {
       return false;
     }
-    prepareAudioRtp(isStereo, sampleRate);
-    audioInitialized = audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo,
-        microphoneManager.getMaxInputSize());
+    onAudioInfoImp(isStereo, sampleRate);
+    audioInitialized = audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo);
     return audioInitialized;
   }
 
@@ -286,12 +282,12 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   }
 
   /**
-   * @param forceVideo force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
-   * @param forceAudio force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   * @param codecTypeVideo force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   * @param codecTypeAudio force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
    */
-  public void setForce(CodecUtil.Force forceVideo, CodecUtil.Force forceAudio) {
-    videoEncoder.setForce(forceVideo);
-    audioEncoder.setForce(forceAudio);
+  public void forceCodecType(CodecUtil.CodecType codecTypeVideo, CodecUtil.CodecType codecTypeAudio) {
+    videoEncoder.forceCodecType(codecTypeVideo);
+    audioEncoder.forceCodecType(codecTypeAudio);
   }
 
   /**
@@ -304,7 +300,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
       throws IOException {
     recordController.startRecord(path, listener);
     if (!streaming) {
-      startEncoders(resultCode, data);
+      startEncoders(resultCode, data, mediaProjectionCallback);
     } else if (videoEncoder.isRunning()) {
       requestKeyFrame();
     }
@@ -325,7 +321,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
       @Nullable RecordController.Listener listener) throws IOException {
     recordController.startRecord(fd, listener);
     if (!streaming) {
-      startEncoders(resultCode, data);
+      startEncoders(resultCode, data, mediaProjectionCallback);
     } else if (videoEncoder.isRunning()) {
       requestKeyFrame();
     }
@@ -344,7 +340,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     if (!streaming) stopStream();
   }
 
-  protected abstract void startStreamRtp(String url);
+  protected abstract void startStreamImp(String url);
 
   /**
    * Create Intent used to init screen capture with startActivityForResult.
@@ -358,6 +354,15 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   public void setIntentResult(int resultCode, Intent data) {
     this.resultCode = resultCode;
     this.data = data;
+  }
+
+  public void setMediaProjectionCallback(MediaProjection.Callback mediaProjectionCallback) {
+    if (videoInitialized || audioInitialized) {
+      throw new RuntimeException("You need to set MediaProjection callback before prepareVideo and prepareAudio");
+    }
+    this.mediaProjectionCallback = mediaProjectionCallback != null
+            ? mediaProjectionCallback
+            : new MediaProjection.Callback() { };
   }
 
   /**
@@ -374,21 +379,21 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   public void startStream(String url) {
     streaming = true;
     if (!recordController.isRunning()) {
-      startEncoders(resultCode, data);
+      startEncoders(resultCode, data, mediaProjectionCallback);
     } else {
       requestKeyFrame();
     }
-    startStreamRtp(url);
+    startStreamImp(url);
   }
 
-  private void startEncoders(int resultCode, Intent data) {
+  private void startEncoders(int resultCode, Intent data, MediaProjection.Callback mediaProjectionCallback) {
     if (data == null) {
       throw new RuntimeException("You need send intent data before startRecord or startStream");
     }
-    videoEncoder.start();
-    if (audioInitialized) audioEncoder.start();
+    long startTs = System.nanoTime() / 1000;
+    videoEncoder.start(startTs);
+    if (audioInitialized) audioEncoder.start(startTs);
     if (glInterface != null) {
-      glInterface.setFps(videoEncoder.getFps());
       glInterface.start();
       glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
     }
@@ -397,13 +402,15 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     if (mediaProjection == null) {
       mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
     }
+    mediaProjection.registerCallback(mediaProjectionCallback, null);
+    VirtualDisplay.Callback callback = new VirtualDisplay.Callback() { };
     if (glInterface != null && videoEncoder.getRotation() == 90
         || videoEncoder.getRotation() == 270) {
       virtualDisplay = mediaProjection.createVirtualDisplay("Stream Display", videoEncoder.getHeight(),
-              videoEncoder.getWidth(), dpi, 0, surface, null, null);
+          videoEncoder.getWidth(), dpi, 0, surface, callback, null);
     } else {
       virtualDisplay = mediaProjection.createVirtualDisplay("Stream Display", videoEncoder.getWidth(),
-              videoEncoder.getHeight(), dpi, 0, surface, null, null);
+              videoEncoder.getHeight(), dpi, 0, surface, callback, null);
     }
     if (audioInitialized) microphoneManager.start();
   }
@@ -414,7 +421,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     }
   }
 
-  protected abstract void stopStreamRtp();
+  protected abstract void stopStreamImp();
 
   /**
    * Stop stream started with @startStream.
@@ -422,7 +429,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   public void stopStream() {
     if (streaming) {
       streaming = false;
-      stopStreamRtp();
+      stopStreamImp();
     }
     if (!recordController.isRecording()) {
       if (audioInitialized) microphoneManager.stop();
@@ -444,70 +451,12 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     }
   }
 
-  /**
-   * Retries to connect with the given delay. You can pass an optional backupUrl
-   * if you'd like to connect to your backup server instead of the original one.
-   * Given backupUrl replaces the original one.
-   */
-  public boolean reTry(long delay, String reason, @Nullable String backupUrl) {
-    boolean result = shouldRetry(reason);
-    if (result) {
-      requestKeyFrame();
-      reConnect(delay, backupUrl);
-    }
-    return result;
-  }
-
-  public boolean reTry(long delay, String reason) {
-    return reTry(delay, reason, null);
-  }
-
-  protected abstract boolean shouldRetry(String reason);
-
-  public abstract void setReTries(int reTries);
-
-  protected abstract void reConnect(long delay, @Nullable String backupUrl);
-
-  //cache control
-  public abstract boolean hasCongestion();
-
-  public abstract void resizeCache(int newSize) throws RuntimeException;
-
-  public abstract int getCacheSize();
-
-  public abstract long getSentAudioFrames();
-
-  public abstract long getSentVideoFrames();
-
-  public abstract long getDroppedAudioFrames();
-
-  public abstract long getDroppedVideoFrames();
-
-  public abstract void resetSentAudioFrames();
-
-  public abstract void resetSentVideoFrames();
-
-  public abstract void resetDroppedAudioFrames();
-
-  public abstract void resetDroppedVideoFrames();
-
   public GlInterface getGlInterface() {
     if (glInterface != null) {
       return glInterface;
     } else {
       throw new RuntimeException("You can't do it. You are not using Opengl");
     }
-  }
-
-  /**
-   * Set a custom size of audio buffer input.
-   * If you set 0 or less you can disable it to use library default value.
-   * Must be called before of prepareAudio method.
-   *
-   * @param size in bytes. Recommended multiple of 1024 (2048, 4096, 8196, etc)
-   */
-  public void setAudioMaxInputSize(int size) {
-    microphoneManager.setMaxInputSize(size);
   }
 
   /**
@@ -559,13 +508,33 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   }
 
   /**
-   * Set limit FPS while stream. This will be override when you call to prepareVideo method.
-   * This could produce a change in iFrameInterval.
+   * Force stream to work with fps selected in prepareVideo method. Must be called before prepareVideo.
+   * This is not recommend because could produce fps problems.
    *
-   * @param fps frames per second
+   * @param enabled true to enabled, false to disable, disabled by default.
    */
-  public void setLimitFPSOnFly(int fps) {
-    videoEncoder.setFps(fps);
+  public void forceFpsLimit(boolean enabled) {
+    int fps = enabled ? videoEncoder.getFps() : 0;
+    videoEncoder.setForceFps(fps);
+    if (glInterface != null) glInterface.forceFpsLimit(fps);
+  }
+
+  public boolean resetVideoEncoder() {
+    if (glInterface != null) {
+      glInterface.removeMediaCodecSurface();
+      boolean result = videoEncoder.reset();
+      if (!result) return false;
+      glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
+    } else {
+      boolean result = videoEncoder.reset();
+      if (!result) return false;
+      if (virtualDisplay != null) virtualDisplay.setSurface(videoEncoder.getInputSurface());
+    }
+    return true;
+  }
+
+  public boolean resetAudioEncoder() {
+    return audioEncoder.reset();
   }
 
   /**
@@ -598,51 +567,77 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     return recordController.getStatus();
   }
 
-  protected abstract void getAacDataRtp(ByteBuffer aacBuffer, MediaCodec.BufferInfo info);
+  protected abstract void getAudioDataImp(ByteBuffer audioBuffer, MediaCodec.BufferInfo info);
 
-  @Override
-  public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    recordController.recordAudio(aacBuffer, info);
-    if (streaming) getAacDataRtp(aacBuffer, info);
-  }
+  protected abstract void onVideoInfoImp(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps);
 
-  protected abstract void onSpsPpsVpsRtp(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps);
-
-  @Override
-  public void onSpsPpsVps(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps) {
-    onSpsPpsVpsRtp(sps.duplicate(), pps.duplicate(), vps != null ? vps.duplicate() : null);
-  }
-
-  protected abstract void getH264DataRtp(ByteBuffer h264Buffer, MediaCodec.BufferInfo info);
-
-  @Override
-  public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
-    fpsListener.calculateFps();
-    recordController.recordVideo(h264Buffer, info);
-    if (streaming) getH264DataRtp(h264Buffer, info);
-  }
-
-  @Override
-  public void inputPCMData(Frame frame) {
-    audioEncoder.inputPCMData(frame);
-  }
-
-  @Override
-  public void onVideoFormat(MediaFormat mediaFormat) {
-    recordController.setVideoFormat(mediaFormat, !audioInitialized);
-  }
-
-  @Override
-  public void onAudioFormat(MediaFormat mediaFormat) {
-    recordController.setAudioFormat(mediaFormat);
-  }
+  protected abstract void getVideoDataImp(ByteBuffer videoBuffer, MediaCodec.BufferInfo info);
 
   public void setRecordController(BaseRecordController recordController) {
     if (!isRecording()) this.recordController = recordController;
   }
 
-  public abstract void setLogs(boolean enable);
+  private final GetMicrophoneData getMicrophoneData = frame -> {
+    audioEncoder.inputPCMData(frame);
+  };
 
-  public abstract void setCheckServerAlive(boolean enable);
+  private final GetAudioData getAudioData = new GetAudioData() {
+    @Override
+    public void getAudioData(@NonNull ByteBuffer audioBuffer, @NonNull MediaCodec.BufferInfo info) {
+      recordController.recordAudio(audioBuffer, info);
+      if (streaming) getAudioDataImp(audioBuffer, info);
+    }
+
+    @Override
+    public void onAudioFormat(@NonNull MediaFormat mediaFormat) {
+      recordController.setAudioFormat(mediaFormat);
+    }
+  };
+
+  private final GetVideoData getVideoData = new GetVideoData() {
+    @Override
+    public void onVideoInfo(@NonNull ByteBuffer sps, @Nullable ByteBuffer pps, @Nullable ByteBuffer vps) {
+      onVideoInfoImp(sps.duplicate(),  pps != null ? pps.duplicate(): null, vps != null ? vps.duplicate() : null);
+    }
+
+    @Override
+    public void getVideoData(@NonNull ByteBuffer videoBuffer, @NonNull MediaCodec.BufferInfo info) {
+      fpsListener.calculateFps();
+      recordController.recordVideo(videoBuffer, info);
+      if (streaming) getVideoDataImp(videoBuffer, info);
+    }
+
+    @Override
+    public void onVideoFormat(@NonNull MediaFormat mediaFormat) {
+      recordController.setVideoFormat(mediaFormat, !audioInitialized);
+    }
+  };
+
+  public abstract StreamBaseClient getStreamClient();
+
+  public void setVideoCodec(VideoCodec codec) {
+    setVideoCodecImp(codec);
+    recordController.setVideoCodec(codec);
+    String type = switch (codec) {
+      case H264 -> CodecUtil.H264_MIME;
+      case H265 -> CodecUtil.H265_MIME;
+      case AV1 -> CodecUtil.AV1_MIME;
+    };
+    videoEncoder.setType(type);
+  }
+
+  public void setAudioCodec(AudioCodec codec) {
+    setAudioCodecImp(codec);
+    recordController.setAudioCodec(codec);
+    String type = switch (codec) {
+      case G711 -> CodecUtil.G711_MIME;
+      case AAC -> CodecUtil.AAC_MIME;
+      case OPUS -> CodecUtil.OPUS_MIME;
+    };
+    audioEncoder.setType(type);
+  }
+
+  protected abstract void setVideoCodecImp(VideoCodec codec);
+  protected abstract void setAudioCodecImp(AudioCodec codec);
 }
 

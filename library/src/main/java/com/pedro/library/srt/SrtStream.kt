@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,17 @@ import android.content.Context
 import android.media.MediaCodec
 import android.os.Build
 import androidx.annotation.RequiresApi
-import com.pedro.encoder.utils.CodecUtil
+import com.pedro.common.AudioCodec
+import com.pedro.common.ConnectChecker
+import com.pedro.common.VideoCodec
 import com.pedro.library.base.StreamBase
-import com.pedro.library.util.sources.AudioManager
-import com.pedro.library.util.sources.VideoManager
+import com.pedro.encoder.input.sources.audio.AudioSource
+import com.pedro.encoder.input.sources.audio.MicrophoneSource
+import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.sources.video.VideoSource
+import com.pedro.library.util.streamclient.SrtStreamClient
+import com.pedro.library.util.streamclient.StreamClientListener
 import com.pedro.srt.srt.SrtClient
-import com.pedro.srt.srt.VideoCodec
-import com.pedro.srt.utils.ConnectCheckerSrt
 import java.nio.ByteBuffer
 
 /**
@@ -37,95 +41,51 @@ import java.nio.ByteBuffer
  */
 
 @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-class SrtStream(context: Context, connectCheckerRtmp: ConnectCheckerSrt, videoSource: VideoManager.Source,
-                audioSource: AudioManager.Source): StreamBase(context, videoSource, audioSource) {
+class SrtStream(
+    context: Context, connectChecker: ConnectChecker, videoSource: VideoSource,
+    audioSource: AudioSource
+): StreamBase(context, videoSource, audioSource) {
 
-  constructor(context: Context, connectCheckerRtmp: ConnectCheckerSrt):
-      this(context, connectCheckerRtmp, VideoManager.Source.CAMERA2, AudioManager.Source.MICROPHONE)
+  private val srtClient = SrtClient(connectChecker)
+  private val streamClientListener = object: StreamClientListener {
+    override fun onRequestKeyframe() {
+      requestKeyframe()
+    }
+  }
+  override fun getStreamClient(): SrtStreamClient = SrtStreamClient(srtClient, streamClientListener)
 
-  private val srtClient = SrtClient(connectCheckerRtmp)
+  constructor(context: Context, connectChecker: ConnectChecker):
+      this(context, connectChecker, Camera2Source(context), MicrophoneSource())
 
-  fun setVideoCodec(videoCodec: VideoCodec) {
-    val mime = if (videoCodec === VideoCodec.H265) CodecUtil.H265_MIME else CodecUtil.H264_MIME
-    super.setVideoMime(mime)
-    srtClient.setVideoCodec(videoCodec)
+  override fun setVideoCodecImp(codec: VideoCodec) {
+    srtClient.setVideoCodec(codec)
   }
 
-  override fun audioInfo(sampleRate: Int, isStereo: Boolean) {
+  override fun setAudioCodecImp(codec: AudioCodec) {
+    srtClient.setAudioCodec(codec)
+  }
+
+  override fun onAudioInfoImp(sampleRate: Int, isStereo: Boolean) {
     srtClient.setAudioInfo(sampleRate, isStereo)
   }
 
-  override fun rtpStartStream(endPoint: String) {
+  override fun startStreamImp(endPoint: String) {
     srtClient.connect(endPoint)
   }
 
-  override fun rtpStopStream() {
+  override fun stopStreamImp() {
     srtClient.disconnect()
   }
 
-  override fun setAuthorization(user: String?, password: String?) {
-    srtClient.setAuthorization(user, password)
-  }
-
-  override fun onSpsPpsVpsRtp(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
+  override fun onVideoInfoImp(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
     srtClient.setVideoInfo(sps, pps, vps)
   }
 
-  override fun getH264DataRtp(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    srtClient.sendVideo(h264Buffer, info)
+  override fun getVideoDataImp(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    srtClient.sendVideo(videoBuffer, info)
   }
 
-  override fun getAacDataRtp(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    srtClient.sendAudio(aacBuffer, info)
-  }
-
-  override fun setReTries(reTries: Int) {
-    srtClient.setReTries(reTries)
-  }
-
-  override fun shouldRetry(reason: String): Boolean = srtClient.shouldRetry(reason)
-
-  override fun reConnect(delay: Long, backupUrl: String?) {
-    srtClient.reConnect(delay, backupUrl)
-  }
-
-  override fun hasCongestion(): Boolean = srtClient.hasCongestion()
-
-  override fun setLogs(enabled: Boolean) {
-    srtClient.setLogs(enabled)
-  }
-
-  override fun setCheckServerAlive(enabled: Boolean) {
-    srtClient.setCheckServerAlive(enabled)
-  }
-
-  override fun resizeCache(newSize: Int) {
-    srtClient.resizeCache(newSize)
-  }
-
-  override fun getCacheSize(): Int = srtClient.cacheSize
-
-  override fun getSentAudioFrames(): Long = srtClient.sentAudioFrames
-
-  override fun getSentVideoFrames(): Long = srtClient.sentVideoFrames
-
-  override fun getDroppedAudioFrames(): Long = srtClient.droppedAudioFrames
-
-  override fun getDroppedVideoFrames(): Long = srtClient.droppedVideoFrames
-
-  override fun resetSentAudioFrames() {
-    srtClient.resetSentAudioFrames()
-  }
-
-  override fun resetSentVideoFrames() {
-    srtClient.resetSentVideoFrames()
-  }
-
-  override fun resetDroppedAudioFrames() {
-    srtClient.resetDroppedAudioFrames()
-  }
-
-  override fun resetDroppedVideoFrames() {
-    srtClient.resetDroppedVideoFrames()
+  override fun getAudioDataImp(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    srtClient.sendAudio(audioBuffer, info)
   }
 }

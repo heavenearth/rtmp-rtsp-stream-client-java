@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.encoder.input.gl.render
 
 import android.content.Context
@@ -7,6 +23,8 @@ import android.view.Surface
 import androidx.annotation.RequiresApi
 import com.pedro.encoder.input.gl.FilterAction
 import com.pedro.encoder.input.gl.render.filters.BaseFilterRender
+import com.pedro.encoder.utils.gl.AspectRatioMode
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Created by pedro on 20/3/22.
@@ -21,6 +39,7 @@ class MainRender {
   private var previewHeight = 0
   private var context: Context? = null
   private var filterRenders: MutableList<BaseFilterRender> = ArrayList()
+  private val running = AtomicBoolean(false)
 
   fun initGl(context: Context, encoderWidth: Int, encoderHeight: Int, previewWidth: Int, previewHeight: Int) {
     this.context = context
@@ -32,16 +51,19 @@ class MainRender {
     screenRender.setStreamSize(encoderWidth, encoderHeight)
     screenRender.setTexId(cameraRender.texId)
     screenRender.initGl(context)
+    running.set(true)
   }
+
+  fun isReady(): Boolean = running.get()
 
   fun drawOffScreen() {
     cameraRender.draw()
     for (baseFilterRender in filterRenders) baseFilterRender.draw()
   }
 
-  fun drawScreen(width: Int, height: Int, keepAspectRatio: Boolean, mode: Int, rotation: Int,
+  fun drawScreen(width: Int, height: Int, mode: AspectRatioMode, rotation: Int,
     flipStreamVertical: Boolean, flipStreamHorizontal: Boolean) {
-    screenRender.draw(width, height, keepAspectRatio, mode, rotation, flipStreamVertical,
+    screenRender.draw(width, height, mode, rotation, flipStreamVertical,
       flipStreamHorizontal)
   }
 
@@ -51,13 +73,13 @@ class MainRender {
       flipStreamHorizontal)
   }
 
-  fun drawScreenPreview(width: Int, height: Int, isPortrait: Boolean, keepAspectRatio: Boolean,
-    mode: Int, rotation: Int, flipStreamVertical: Boolean, flipStreamHorizontal: Boolean) {
-    screenRender.drawPreview(width, height, isPortrait, keepAspectRatio, mode, rotation,
-      flipStreamVertical, flipStreamHorizontal)
+  fun drawScreenPreview(width: Int, height: Int, isPortrait: Boolean,
+    mode: AspectRatioMode, rotation: Int, flipStreamVertical: Boolean, flipStreamHorizontal: Boolean) {
+    screenRender.drawPreview(width, height, isPortrait, mode, rotation, flipStreamVertical, flipStreamHorizontal)
   }
 
   fun release() {
+    running.set(false)
     cameraRender.release()
     for (baseFilterRender in filterRenders) baseFilterRender.release()
     filterRenders.clear()
@@ -120,7 +142,7 @@ class MainRender {
     screenRender.setTexId(texId)
   }
 
-  fun setFilterAction(filterAction: FilterAction?, position: Int, baseFilterRender: BaseFilterRender) {
+  fun setFilterAction(filterAction: FilterAction, position: Int, baseFilterRender: BaseFilterRender) {
     when (filterAction) {
       FilterAction.SET -> if (filterRenders.size > 0) {
         setFilter(position, baseFilterRender)
@@ -133,7 +155,6 @@ class MainRender {
       FilterAction.CLEAR -> clearFilters()
       FilterAction.REMOVE -> removeFilter(baseFilterRender)
       FilterAction.REMOVE_INDEX -> removeFilter(position)
-      else -> {}
     }
   }
 
@@ -145,14 +166,6 @@ class MainRender {
     for (i in filterRenders.indices) {
       filterRenders[i].setPreviewSize(previewWidth, previewHeight)
     }
-  }
-
-  fun enableAA(AAEnabled: Boolean) {
-    screenRender.isAAEnabled = AAEnabled
-  }
-
-  fun isAAEnabled(): Boolean {
-    return screenRender.isAAEnabled
   }
 
   fun updateFrame() {

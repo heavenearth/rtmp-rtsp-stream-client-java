@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,6 @@ enum class HandshakeType(val value: Int) {
   SRT_REJ_FILTER(1014), SRT_REJ_GROUP(1015), SRT_REJ_TIMEOUT(1016), SRT_REJ_CRYPTO(1017);
 
   companion object {
-    infix fun from(value: Int): HandshakeType = HandshakeType.values().firstOrNull { it.value == value } ?: throw IOException("unknown handshake type: $value")
+    infix fun from(value: Int): HandshakeType = entries.firstOrNull { it.value == value } ?: throw IOException("unknown handshake type: $value")
   }
 }

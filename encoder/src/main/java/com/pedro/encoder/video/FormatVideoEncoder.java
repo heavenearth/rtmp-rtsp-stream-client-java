@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,35 +31,23 @@ public enum FormatVideoEncoder {
   YUV420Dynamical;
 
   public int getFormatCodec() {
-    switch (this) {
-      case YUV420FLEXIBLE:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;
-      case YUV420PLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;
-      case YUV420SEMIPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar;
-      case YUV420PACKEDPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar;
-      case YUV420PACKEDSEMIPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar;
-      case YUV422FLEXIBLE:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422Flexible;
-      case YUV422PLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422Planar;
-      case YUV422SEMIPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422SemiPlanar;
-      case YUV422PACKEDPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422PackedPlanar;
-      case YUV422PACKEDSEMIPLANAR:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422PackedSemiPlanar;
-      case YUV444FLEXIBLE:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV444Flexible;
-      case YUV444INTERLEAVED:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV444Interleaved;
-      case SURFACE:
-        return MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface;
-      default:
-        return -1;
-    }
+    return switch (this) {
+      case YUV420FLEXIBLE -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;
+      case YUV420PLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;
+      case YUV420SEMIPLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar;
+      case YUV420PACKEDPLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar;
+      case YUV420PACKEDSEMIPLANAR ->
+          MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar;
+      case YUV422FLEXIBLE -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422Flexible;
+      case YUV422PLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422Planar;
+      case YUV422SEMIPLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422SemiPlanar;
+      case YUV422PACKEDPLANAR -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422PackedPlanar;
+      case YUV422PACKEDSEMIPLANAR ->
+          MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV422PackedSemiPlanar;
+      case YUV444FLEXIBLE -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV444Flexible;
+      case YUV444INTERLEAVED -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV444Interleaved;
+      case SURFACE -> MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface;
+      default -> -1;
+    };
   }
 }

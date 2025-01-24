@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,10 @@ object RtpConstants {
   const val clockVideoFrequency = 90000L
   const val RTP_HEADER_LENGTH = 12
   const val MTU = 1500
+  const val REPORT_PACKET_LENGTH = 28
   const val payloadType = 96
-
+  //PCMA, https://blog.csdn.net/hiwubihe/article/details/84569152
+  const val payloadTypeG711 = 8
   //H264 IDR
   const val IDR = 5
 

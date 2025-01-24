@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -290,6 +290,14 @@ public class AndroidViewFilterRender extends BaseFilterRender {
                 renderingStatus = Status.DONE2;
               }
             });
+          }
+        }
+        else {
+          // not rendering, no need to try again immediately
+          try {
+            Thread.sleep(10);
+          } catch (InterruptedException e) {
+
           }
         }
       }

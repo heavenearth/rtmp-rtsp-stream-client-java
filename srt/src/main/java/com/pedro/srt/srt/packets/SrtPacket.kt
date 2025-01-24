@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ abstract class SrtPacket {
 
   companion object {
 
-    val headerSize = 16
+    const val headerSize = 16
 
     @Throws(IOException::class)
     fun getSrtPacket(buffer: ByteArray): SrtPacket {

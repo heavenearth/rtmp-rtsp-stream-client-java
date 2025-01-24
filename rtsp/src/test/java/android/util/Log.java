@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,13 +40,13 @@ public class Log {
   }
 
   private static int println(String tag, String message, Throwable throwable) {
-    System.out.println("" + tag + ": " + message);
+    System.out.println(tag + ": " + message);
     if (throwable != null) throwable.printStackTrace();
     return 0;
   }
 
   private static int printlnError(String tag, String message, Throwable throwable) {
-    System.err.println("" + tag + ": " + message);
+    System.err.println(tag + ": " + message);
     if (throwable != null) throwable.printStackTrace();
     return 0;
   }

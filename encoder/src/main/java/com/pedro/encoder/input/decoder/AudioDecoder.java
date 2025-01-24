@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.util.Log;
 
+import com.pedro.common.ExtensionsKt;
+import com.pedro.common.frame.MediaFrame;
 import com.pedro.encoder.Frame;
 import com.pedro.encoder.input.audio.GetMicrophoneData;
 import com.pedro.encoder.utils.CodecUtil;
@@ -33,7 +35,7 @@ import java.nio.ByteBuffer;
 public class AudioDecoder extends BaseDecoder {
 
   private final AudioDecoderInterface audioDecoderInterface;
-  private final GetMicrophoneData getMicrophoneData;
+  private GetMicrophoneData getMicrophoneData;
   private int sampleRate;
   private boolean isStereo;
   private int channels = 1;
@@ -43,42 +45,34 @@ public class AudioDecoder extends BaseDecoder {
   private boolean muted = false;
 
   public AudioDecoder(GetMicrophoneData getMicrophoneData,
-      AudioDecoderInterface audioDecoderInterface) {
+      AudioDecoderInterface audioDecoderInterface, DecoderInterface decoderInterface) {
+    super(decoderInterface);
     TAG = "AudioDecoder";
     this.getMicrophoneData = getMicrophoneData;
     this.audioDecoderInterface = audioDecoderInterface;
   }
 
   @Override
-  protected boolean extract(MediaExtractor audioExtractor) {
-    size = 2048;
-    for (int i = 0; i < audioExtractor.getTrackCount() && !mime.startsWith("audio/"); i++) {
-      mediaFormat = audioExtractor.getTrackFormat(i);
-      mime = mediaFormat.getString(MediaFormat.KEY_MIME);
-      if (mime.startsWith("audio/")) {
-        audioExtractor.selectTrack(i);
-      } else {
-        mediaFormat = null;
-      }
-    }
-    if (mediaFormat != null) {
-      channels = mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+  protected boolean extract(Extractor extractor) {
+    try {
+      size = 2048;
+      mime = extractor.selectTrack(MediaFrame.Type.AUDIO);
+      AudioInfo audioInfo = extractor.getAudioInfo();
+      mediaFormat = extractor.getFormat();
+      this.channels = audioInfo.getChannels();
       isStereo = channels >= 2;
-      sampleRate = mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-      duration = mediaFormat.getLong(MediaFormat.KEY_DURATION);
+      this.sampleRate = audioInfo.getSampleRate();
+      this.duration = audioInfo.getDuration();
       fixBuffer();
       return true;
-      //audio decoder not supported
-    } else {
+    } catch (Exception e) {
       mime = "";
       return false;
     }
   }
 
   private void fixBuffer() {
-    if (channels >= 2) {
-      size *= channels;
-    }
+    if (channels >= 2) size *= channels;
     pcmBuffer = new byte[size];
   }
 
@@ -87,12 +81,14 @@ public class AudioDecoder extends BaseDecoder {
   }
 
   @Override
-  protected boolean decodeOutput(ByteBuffer outputBuffer) {
+  protected boolean decodeOutput(ByteBuffer outputBuffer, long timeStamp) {
     //This buffer is PCM data
+    GetMicrophoneData getMicrophoneData = this.getMicrophoneData;
+    if (getMicrophoneData == null) return false;
     if (muted) {
       outputBuffer.get(pcmBufferMuted, 0,
               Math.min(outputBuffer.remaining(), pcmBufferMuted.length));
-      getMicrophoneData.inputPCMData(new Frame(pcmBufferMuted, 0, pcmBufferMuted.length));
+      getMicrophoneData.inputPCMData(new Frame(pcmBufferMuted, 0, pcmBufferMuted.length, timeStamp));
     } else {
       if (pcmBuffer.length < outputBuffer.remaining()) {
         pcmBuffer = new byte[outputBuffer.remaining()];
@@ -100,9 +96,9 @@ public class AudioDecoder extends BaseDecoder {
       outputBuffer.get(pcmBuffer, 0, Math.min(outputBuffer.remaining(), pcmBuffer.length));
       if (channels > 2) { //downgrade to stereo
         byte[] bufferStereo = PCMUtil.pcmToStereo(pcmBuffer, channels);
-        getMicrophoneData.inputPCMData(new Frame(bufferStereo, 0, bufferStereo.length));
+        getMicrophoneData.inputPCMData(new Frame(bufferStereo, 0, bufferStereo.length, timeStamp));
       } else {
-        getMicrophoneData.inputPCMData(new Frame(pcmBuffer, 0, pcmBuffer.length));
+        getMicrophoneData.inputPCMData(new Frame(pcmBuffer, 0, pcmBuffer.length, timeStamp));
       }
     }
     return false;
@@ -111,35 +107,6 @@ public class AudioDecoder extends BaseDecoder {
   @Override
   protected void finished() {
     audioDecoderInterface.onAudioDecoderFinished();
-  }
-
-  /**
-   * This method should be called after prepare.
-   * Get max output size to set max input size in encoder.
-   */
-  public int getOutsize() {
-    if (!(mime.equals(CodecUtil.AAC_MIME) || mime.equals(CodecUtil.OPUS_MIME) || mime.equals(
-        CodecUtil.VORBIS_MIME))) {
-      Log.i(TAG, "fixing input size");
-      try {
-        if (running) {
-          return codec.getOutputBuffers()[0].remaining();
-        } else {
-          if (codec != null) {
-            codec.start();
-            int outSize = codec.getOutputBuffers()[0].remaining();
-            stopDecoder();
-            if (prepare(null)) return outSize;
-          }
-          return 0;
-        }
-      } catch (Exception e) {
-        return 0;
-      }
-    } else {
-      Log.i(TAG, "default input size");
-      return 0;
-    }
   }
 
   public void mute() {
@@ -160,5 +127,14 @@ public class AudioDecoder extends BaseDecoder {
 
   public boolean isStereo() {
     return isStereo;
+  }
+
+  public int getSize() {
+    return size;
+  }
+
+  public void setGetMicrophoneData(GetMicrophoneData getMicrophoneData) {
+    if (running) return;
+    this.getMicrophoneData = getMicrophoneData;
   }
 }

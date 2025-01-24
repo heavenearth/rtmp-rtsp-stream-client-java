@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ object Utils {
     assertEquals(actual.toString(), expected.toString())
   }
 
-  fun useStatics(statics: List<MockedStatic<out Any>>, callback: () -> Unit) {
+  suspend fun useStatics(statics: List<MockedStatic<out Any>>, callback: suspend () -> Unit) {
     val list = statics.toMutableList()
     if (list.isEmpty()) callback()
     else if (list.size == 1) {

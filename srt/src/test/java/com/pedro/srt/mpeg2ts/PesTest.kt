@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 
 package com.pedro.srt.mpeg2ts
 
+import com.pedro.common.TimeUtils
 import com.pedro.srt.Utils
-import com.pedro.srt.utils.TimeUtils
+import com.pedro.srt.mpeg2ts.psi.PsiManager
+import com.pedro.srt.mpeg2ts.service.Mpeg2TsService
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Before
 import org.junit.Test
@@ -30,6 +33,7 @@ import java.nio.ByteBuffer
  */
 class PesTest {
 
+  private val service = Mpeg2TsService()
   private val timeUtilsMock = Mockito.mockStatic(TimeUtils::class.java)
 
   @Before
@@ -38,7 +42,7 @@ class PesTest {
   }
 
   @Test
-  fun `GIVEN a fake aac buffer WHEN create a mpegts packet with pes packet THEN get the expected buffer`() {
+  fun `GIVEN a fake aac buffer WHEN create a mpegts packet with pes packet THEN get the expected buffer`() = runTest {
     Utils.useStatics(listOf(timeUtilsMock)) {
       val data = ByteBuffer.wrap(
         ByteArray(188) { 0xAA.toByte() }
@@ -46,7 +50,8 @@ class PesTest {
       val expected = ByteBuffer.wrap(
         byteArrayOf(71, 65, 0, 48, 7, 80, 0, 0, 123, 12, 126, 0, 0, 0, 1, -64, 0, -60, -127, -128, 5, 33, 0, 7, -40, 97, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, 71, 1, 0, 49, -99, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86, -86)
       )
-      val mpegTsPacketizer = MpegTsPacketizer()
+      val psiManager = PsiManager(service)
+      val mpegTsPacketizer = MpegTsPacketizer(psiManager)
       val pes = Pes(256, true, PesType.AUDIO, 1400000, data)
       val mpeg2tsPackets = mpegTsPacketizer.write(listOf(pes))
       val chunked = mpeg2tsPackets

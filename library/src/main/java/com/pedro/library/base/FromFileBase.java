@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,18 +22,25 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.net.Uri;
 import android.os.Build;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
-import com.pedro.encoder.Frame;
+import com.pedro.common.AudioCodec;
+import com.pedro.common.VideoCodec;
+import com.pedro.encoder.EncoderErrorCallback;
+import com.pedro.encoder.TimestampMode;
 import com.pedro.encoder.audio.AudioEncoder;
-import com.pedro.encoder.audio.GetAacData;
+import com.pedro.encoder.audio.GetAudioData;
 import com.pedro.encoder.input.audio.GetMicrophoneData;
 import com.pedro.encoder.input.decoder.AudioDecoder;
 import com.pedro.encoder.input.decoder.AudioDecoderInterface;
+import com.pedro.encoder.input.decoder.BaseDecoder;
+import com.pedro.encoder.input.decoder.DecoderInterface;
+import com.pedro.encoder.input.decoder.Extractor;
 import com.pedro.encoder.input.decoder.VideoDecoder;
 import com.pedro.encoder.input.decoder.VideoDecoderInterface;
 import com.pedro.encoder.utils.CodecUtil;
@@ -44,9 +51,10 @@ import com.pedro.library.base.recording.BaseRecordController;
 import com.pedro.library.base.recording.RecordController;
 import com.pedro.library.util.AndroidMuxerRecordController;
 import com.pedro.library.util.FpsListener;
+import com.pedro.library.util.IORunnable;
+import com.pedro.library.util.streamclient.StreamBaseClient;
 import com.pedro.library.view.GlInterface;
-import com.pedro.library.view.LightOpenGlView;
-import com.pedro.library.view.OffScreenGlThread;
+import com.pedro.library.view.GlStreamInterface;
 import com.pedro.library.view.OpenGlView;
 
 import java.io.FileDescriptor;
@@ -64,7 +72,7 @@ import java.nio.ByteBuffer;
  */
 
 @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicrophoneData {
+public abstract class FromFileBase {
 
   private static final String TAG = "FromFileBase";
 
@@ -81,6 +89,8 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   protected boolean videoEnabled = false;
   private boolean audioEnabled = false;
   private AudioTrack audioTrackPlayer;
+  private VideoDecoderInterface videoDecoderInterface;
+  private AudioDecoderInterface audioDecoderInterface;
 
   public FromFileBase(VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
@@ -92,32 +102,34 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
    */
   public FromFileBase(Context context, VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
-    glInterface = new OffScreenGlThread(context);
-    glInterface.init();
+    glInterface = new GlStreamInterface(context);
     init(videoDecoderInterface, audioDecoderInterface);
   }
 
   public FromFileBase(OpenGlView openGlView, VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
     glInterface = openGlView;
-    glInterface.init();
-    init(videoDecoderInterface, audioDecoderInterface);
-  }
-
-  public FromFileBase(LightOpenGlView lightOpenGlView, VideoDecoderInterface videoDecoderInterface,
-      AudioDecoderInterface audioDecoderInterface) {
-    glInterface = lightOpenGlView;
-    glInterface.init();
     init(videoDecoderInterface, audioDecoderInterface);
   }
 
   private void init(VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
-    videoEncoder = new VideoEncoder(this);
-    audioEncoder = new AudioEncoder(this);
-    videoDecoder = new VideoDecoder(videoDecoderInterface);
-    audioDecoder = new AudioDecoder(this, audioDecoderInterface);
+    this.videoDecoderInterface = videoDecoderInterface;
+    this.audioDecoderInterface = audioDecoderInterface;
+    videoEncoder = new VideoEncoder(getVideoData);
+    audioEncoder = new AudioEncoder(getAudioData);
+    videoDecoder = new VideoDecoder(videoDecoderInterface, decoderInterface);
+    audioDecoder = new AudioDecoder(getMicrophoneData, audioDecoderInterface, decoderInterface);
     recordController = new AndroidMuxerRecordController();
+  }
+
+  /**
+   * Set the mode to calculate timestamp. By default CLOCK.
+   * Must be called before startRecord/startStream or it will be ignored.
+   */
+  public void setTimestampMode(TimestampMode timestampModeVideo, TimestampMode timestampModeAudio) {
+    videoEncoder.setTimestampMode(timestampModeVideo);
+    audioEncoder.setTimestampMode(timestampModeAudio);
   }
 
   /**
@@ -128,37 +140,48 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   }
 
   /**
-   * Basic auth developed to work with Wowza. No tested with other server
-   *
-   * @param user auth.
-   * @param password auth.
-   */
-  public abstract void setAuthorization(String user, String password);
-
-  /**
    * @param filePath to video MP4 file.
    * @param bitRate H264 in bps.
+   * @param profile codec value from MediaCodecInfo.CodecProfileLevel class
+   * @param level codec value from MediaCodecInfo.CodecProfileLevel class
    * @return true if success, false if you get a error (Normally because the encoder selected
    * doesn't support any configuration seated or your device hasn't a H264 encoder).
    * @throws IOException Normally file not found.
    */
-  public boolean prepareVideo(String filePath, int bitRate, int rotation, int avcProfile,
-      int avcProfileLevel) throws IOException {
+  public boolean prepareVideo(String filePath, int bitRate, int rotation, int profile,
+      int level) throws IOException {
     if (!videoDecoder.initExtractor(filePath)) return false;
-    return finishPrepareVideo(bitRate, rotation, avcProfile, avcProfileLevel);
+    return finishPrepareVideo(bitRate, rotation, profile, level);
   }
 
   /**
    * @param fileDescriptor to video MP4 file.
    * @param bitRate H264 in bps.
+   * @param profile codec value from MediaCodecInfo.CodecProfileLevel class
+   * @param level codec value from MediaCodecInfo.CodecProfileLevel class
    * @return true if success, false if you get a error (Normally because the encoder selected
    * doesn't support any configuration seated or your device hasn't a H264 encoder).
    * @throws IOException Normally file not found.
    */
-  public boolean prepareVideo(FileDescriptor fileDescriptor, int bitRate, int rotation, int avcProfile,
-      int avcProfileLevel) throws IOException {
+  public boolean prepareVideo(FileDescriptor fileDescriptor, int bitRate, int rotation, int profile,
+      int level) throws IOException {
     if (!videoDecoder.initExtractor(fileDescriptor)) return false;
-    return finishPrepareVideo(bitRate, rotation, avcProfile, avcProfileLevel);
+    return finishPrepareVideo(bitRate, rotation, profile, level);
+  }
+
+  /**
+   * @param uri Uri to video MP4 file.
+   * @param bitRate H264 in bps.
+   * @param profile codec value from MediaCodecInfo.CodecProfileLevel class
+   * @param level codec value from MediaCodecInfo.CodecProfileLevel class
+   * @return true if success, false if you get a error (Normally because the encoder selected
+   * doesn't support any configuration seated or your device hasn't a H264 encoder).
+   * @throws IOException Normally file not found.
+   */
+  public boolean prepareVideo(Context context, Uri uri, int bitRate, int rotation, int profile,
+      int level) throws IOException {
+    if (!videoDecoder.initExtractor(context, uri)) return false;
+    return finishPrepareVideo(bitRate, rotation, profile, level);
   }
 
   public boolean prepareVideo(String filePath, int bitRate, int rotation) throws IOException {
@@ -173,14 +196,21 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     return prepareVideo(filePath, 1200 * 1024, 0);
   }
 
+  public boolean prepareVideo(Context context, Uri uri, int bitRate, int rotation) throws IOException {
+    return prepareVideo(context, uri, bitRate, rotation, -1, -1);
+  }
+
+  public boolean prepareVideo(Context context, Uri uri) throws IOException {
+    return prepareVideo(context, uri, 1200 * 1024, 0);
+  }
+
   public boolean prepareVideo(FileDescriptor fileDescriptor) throws IOException {
     return prepareVideo(fileDescriptor, 1200 * 1024, 0);
   }
 
-  private boolean finishPrepareVideo(int bitRate, int rotation, int avcProfile,  int avcProfileLevel) {
-    boolean result =
-        videoEncoder.prepareVideoEncoder(videoDecoder.getWidth(), videoDecoder.getHeight(), videoDecoder.getFps(),
-            bitRate, rotation, 2, FormatVideoEncoder.SURFACE, avcProfile, avcProfileLevel);
+  private boolean finishPrepareVideo(int bitRate, int rotation, int profile,  int level) {
+    boolean result = videoEncoder.prepareVideoEncoder(videoDecoder.getWidth(), videoDecoder.getHeight(), videoDecoder.getFps(),
+            bitRate, rotation, 2, FormatVideoEncoder.SURFACE, profile, level);
     if (!result) return false;
     result = videoDecoder.prepareVideo(videoEncoder.getInputSurface());
     videoEnabled = result;
@@ -211,11 +241,23 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     return finishPrepareAudio(bitRate);
   }
 
+  /**
+   * @param uri Uri to audio file.
+   * @param bitRate AAC in kb.
+   * @return true if success, false if you get a error (Normally because the encoder selected
+   * doesn't support any configuration seated or your device hasn't a H264 encoder).
+   * @throws IOException Normally file not found.
+   */
+  public boolean prepareAudio(Context context, Uri uri, int bitRate) throws IOException {
+    if (!audioDecoder.initExtractor(context, uri)) return false;
+    return finishPrepareAudio(bitRate);
+  }
+
   private boolean finishPrepareAudio(int bitRate) {
     audioDecoder.prepareAudio();
     boolean result = audioEncoder.prepareAudioEncoder(bitRate, audioDecoder.getSampleRate(),
-        audioDecoder.isStereo(), audioDecoder.getOutsize());
-    prepareAudioRtp(audioDecoder.isStereo(), audioDecoder.getSampleRate());
+        audioDecoder.isStereo());
+    onAudioInfoImp(audioDecoder.isStereo(), audioDecoder.getSampleRate());
     audioEnabled = result;
     return result;
   }
@@ -223,6 +265,15 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   public boolean isAudioDeviceEnabled() {
     return audioTrackPlayer != null
         && audioTrackPlayer.getPlayState() == AudioTrack.PLAYSTATE_PLAYING;
+  }
+
+  /**
+   * Set a callback to know errors related with Video/Audio encoders
+   * @param encoderErrorCallback callback to use, null to remove
+   */
+  public void setEncoderErrorCallback(EncoderErrorCallback encoderErrorCallback) {
+    videoEncoder.setEncoderErrorCallback(encoderErrorCallback);
+    audioEncoder.setEncoderErrorCallback(encoderErrorCallback);
   }
 
   public void playAudioDevice() {
@@ -252,14 +303,19 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     return prepareAudio(filePath, 64 * 1024);
   }
 
-  protected abstract void prepareAudioRtp(boolean isStereo, int sampleRate);
+  public boolean prepareAudio(Context context, Uri uri) throws IOException {
+    return prepareAudio(context, uri, 64 * 1024);
+  }
+
+  protected abstract void onAudioInfoImp(boolean isStereo, int sampleRate);
 
   /**
-   * @param forceVideo force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   * @param codecTypeVideo force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   * @param codecTypeAudio force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
    */
-  public void setForce(CodecUtil.Force forceVideo, CodecUtil.Force forceAudio) {
-    if (videoEnabled) videoEncoder.setForce(forceVideo);
-    if (audioEnabled) audioEncoder.setForce(forceAudio);
+  public void forceCodecType(CodecUtil.CodecType codecTypeVideo, CodecUtil.CodecType codecTypeAudio) {
+    if (videoEnabled) videoEncoder.forceCodecType(codecTypeVideo);
+    if (audioEnabled) audioEncoder.forceCodecType(codecTypeAudio);
   }
 
   /**
@@ -310,7 +366,7 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     if (!streaming) stopStream();
   }
 
-  protected abstract void startStreamRtp(String url);
+  protected abstract void startStreamImp(String url);
 
   /**
    * Need be called after @prepareVideo.
@@ -330,28 +386,25 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     } else {
       if (videoEnabled) requestKeyFrame();
     }
-    startStreamRtp(url);
+    startStreamImp(url);
   }
 
   private void startEncoders() {
-    if (videoEnabled) videoEncoder.start();
+    long startTs = System.nanoTime() / 1000;
+    if (videoEnabled) videoEncoder.start(startTs);
     if (audioTrackPlayer != null) audioTrackPlayer.play();
-    if (audioEnabled) audioEncoder.start();
+    if (audioEnabled) audioEncoder.start(startTs);
     if (videoEnabled) prepareGlView();
     if (videoEnabled) videoDecoder.start();
     if (audioEnabled) audioDecoder.start();
   }
 
   public void replaceView(Context context) {
-    replaceGlInterface(new OffScreenGlThread(context));
+    replaceGlInterface(new GlStreamInterface(context));
   }
 
   public void replaceView(OpenGlView openGlView) {
     replaceGlInterface(openGlView);
-  }
-
-  public void replaceView(LightOpenGlView lightOpenGlView) {
-    replaceGlInterface(lightOpenGlView);
   }
 
   /**
@@ -364,28 +417,33 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
         this.glInterface.removeMediaCodecSurface();
         this.glInterface.stop();
         this.glInterface = glInterface;
-        this.glInterface.init();
         prepareGlView();
         videoDecoder.resumeRender();
       } else {
         this.glInterface = glInterface;
-        this.glInterface.init();
       }
     }
   }
 
   private void prepareGlView() {
     if (glInterface != null) {
-      glInterface.setFps(videoEncoder.getFps());
+      int w = videoEncoder.getWidth();
+      int h = videoEncoder.getHeight();
+      boolean isPortrait = false;
       if (videoEncoder.getRotation() == 90 || videoEncoder.getRotation() == 270) {
-        glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
-      } else {
-        glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
+        h = videoEncoder.getWidth();
+        w = videoEncoder.getHeight();
+        isPortrait = true;
+      }
+      glInterface.setEncoderSize(w, h);
+      if (glInterface instanceof GlStreamInterface glStreamInterface) {
+        glStreamInterface.setPreviewResolution(w, h);
+        glStreamInterface.setIsPortrait(isPortrait);
       }
       glInterface.setRotation(0);
       glInterface.start();
       if (videoEncoder.getInputSurface() != null) {
-        videoDecoder.changeOutputSurface(this.glInterface.getSurface());
+        videoDecoder.changeOutputSurface(glInterface.getSurface());
         glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
       }
     }
@@ -409,54 +467,7 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     }
   }
 
-  protected abstract void stopStreamRtp();
-
-  /**
-   * Retries to connect with the given delay. You can pass an optional backupUrl
-   * if you'd like to connect to your backup server instead of the original one.
-   * Given backupUrl replaces the original one.
-   */
-  public boolean reTry(long delay, String reason, @Nullable String backupUrl) {
-    boolean result = shouldRetry(reason);
-    if (result) {
-      requestKeyFrame();
-      reConnect(delay, backupUrl);
-    }
-    return result;
-  }
-
-  public boolean reTry(long delay, String reason) {
-    return reTry(delay, reason, null);
-  }
-
-  protected abstract boolean shouldRetry(String reason);
-
-  public abstract void setReTries(int reTries);
-
-  protected abstract void reConnect(long delay, @Nullable String backupUrl);
-
-  //cache control
-  public abstract boolean hasCongestion();
-
-  public abstract void resizeCache(int newSize) throws RuntimeException;
-
-  public abstract int getCacheSize();
-
-  public abstract long getSentAudioFrames();
-
-  public abstract long getSentVideoFrames();
-
-  public abstract long getDroppedAudioFrames();
-
-  public abstract long getDroppedVideoFrames();
-
-  public abstract void resetSentAudioFrames();
-
-  public abstract void resetSentVideoFrames();
-
-  public abstract void resetDroppedAudioFrames();
-
-  public abstract void resetDroppedVideoFrames();
+  protected abstract void stopStreamImp();
 
   /**
    * Stop stream started with @startStream.
@@ -464,7 +475,7 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   public void stopStream() {
     if (streaming) {
       streaming = false;
-      stopStreamRtp();
+      stopStreamImp();
     }
     if (!recordController.isRecording()) {
       if (glInterface != null) {
@@ -492,8 +503,8 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
    * @param loopMode true in loop, false stop stream when video finish.
    */
   public void setLoopMode(boolean loopMode) {
-    if (videoEnabled) videoDecoder.setLoopMode(loopMode);
-    if (audioEnabled) audioDecoder.setLoopMode(loopMode);
+    videoDecoder.setLoopMode(loopMode);
+    audioDecoder.setLoopMode(loopMode);
   }
 
   public void reSyncFile() {
@@ -535,13 +546,33 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   }
 
   /**
-   * Set limit FPS while stream. This will be override when you call to prepareVideo method.
-   * This could produce a change in iFrameInterval.
+   * Force stream to work with fps selected in prepareVideo method. Must be called before prepareVideo.
+   * This is not recommend because could produce fps problems.
    *
-   * @param fps frames per second
+   * @param enabled true to enabled, false to disable, disabled by default.
    */
-  public void setLimitFPSOnFly(int fps) {
-    videoEncoder.setFps(fps);
+  public void forceFpsLimit(boolean enabled) {
+    int fps = enabled ? videoEncoder.getFps() : 0;
+    videoEncoder.setForceFps(fps);
+    if (glInterface != null) glInterface.forceFpsLimit(fps);
+  }
+
+  public boolean resetVideoEncoder() {
+    if (glInterface != null) {
+      glInterface.removeMediaCodecSurface();
+      boolean result = videoEncoder.reset();
+      if (!result) return false;
+      glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
+    } else {
+      boolean result = videoEncoder.reset();
+      if (!result) return false;
+      if (videoDecoder.isRunning()) videoDecoder.changeOutputSurface(videoEncoder.getInputSurface());
+    }
+    return true;
+  }
+
+  public boolean resetAudioEncoder() {
+    return audioEncoder.reset();
   }
 
   /**
@@ -589,17 +620,82 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
   }
 
   /**
-   * @return return duration in seconds. 0 if no streaming
+   * @return return duration in seconds. 0 if no streaming, -1 if can't extract it from file
    */
   public double getVideoDuration() {
     return videoDecoder.getDuration();
   }
 
   /**
-   * @return return duration in seconds. 0 if no streaming
+   * @return return duration in seconds. 0 if no streaming, -1 if can't extract it from file
    */
   public double getAudioDuration() {
     return audioDecoder.getDuration();
+  }
+
+  public void replaceAudioFile(String filePath) throws IOException {
+    resetAudioDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(filePath)) throw new IOException("Extraction failed");
+    });
+  }
+
+  public void replaceAudioFile(Context context, Uri uri) throws IOException {
+    resetAudioDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(context, uri)) throw new IOException("Extraction failed");
+    });
+  }
+
+  public void replaceAudioFile(FileDescriptor fileDescriptor) throws IOException {
+    resetAudioDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(fileDescriptor)) throw new IOException("Extraction failed");
+    });
+  }
+
+  public void replaceVideoFile(String filePath) throws IOException {
+    resetVideoDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(filePath)) throw new IOException("Extraction failed");
+    });
+  }
+
+  public void replaceVideoFile(Context context, Uri uri) throws IOException {
+    resetVideoDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(context, uri)) throw new IOException("Extraction failed");
+    });
+  }
+
+  public void replaceVideoFile(FileDescriptor fileDescriptor) throws IOException {
+    resetVideoDecoder((BaseDecoder decoder) -> {
+      if (!decoder.initExtractor(fileDescriptor)) throw new IOException("Extraction failed");
+    });
+  }
+
+  private void resetVideoDecoder(IORunnable runnable) throws IOException {
+    int width = videoDecoder.getWidth();
+    int height = videoDecoder.getHeight();
+    boolean wasRunning = videoDecoder.isRunning();
+    VideoDecoder videoDecoder = new VideoDecoder(videoDecoderInterface, decoderInterface);
+    videoDecoder.setExtractor(this.videoDecoder.getExtractor());
+    runnable.run(videoDecoder);
+    if (width != videoDecoder.getWidth() || height != videoDecoder.getHeight()) throw new IOException("Resolution must be the same that the previous file");
+    this.videoDecoder.stop();
+    this.videoDecoder = videoDecoder;
+    videoDecoder.prepareVideo(glInterface.getSurface());
+    if (wasRunning) videoDecoder.start();
+  }
+
+  private void resetAudioDecoder(IORunnable runnable) throws IOException {
+    int sampleRate = audioDecoder.getSampleRate();
+    boolean isStereo = audioDecoder.isStereo();
+    boolean wasRunning = audioDecoder.isRunning();
+    AudioDecoder audioDecoder = new AudioDecoder(getMicrophoneData, audioDecoderInterface, decoderInterface);
+    audioDecoder.setExtractor(this.audioDecoder.getExtractor());
+    runnable.run(audioDecoder);
+    if (sampleRate != audioDecoder.getSampleRate()) throw new IOException("SampleRate must be the same that the previous file");
+    if (isStereo != audioDecoder.isStereo()) throw new IOException("Channels must be the same that the previous file");
+    this.audioDecoder.stop();
+    this.audioDecoder = audioDecoder;
+    audioDecoder.prepareAudio();
+    if (wasRunning) audioDecoder.start();
   }
 
   /**
@@ -612,53 +708,96 @@ public abstract class FromFileBase implements GetVideoData, GetAacData, GetMicro
     if (audioEnabled) audioDecoder.moveTo(time);
   }
 
-  protected abstract void onSpsPpsVpsRtp(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps);
-
-  @Override
-  public void onSpsPpsVps(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps) {
-    onSpsPpsVpsRtp(sps.duplicate(), pps.duplicate(), vps != null ? vps.duplicate() : null);
+  public void setVideoExtractor(Extractor extractor) {
+    videoDecoder.setExtractor(extractor);
   }
 
-  protected abstract void getH264DataRtp(ByteBuffer h264Buffer, MediaCodec.BufferInfo info);
-
-  @Override
-  public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
-    fpsListener.calculateFps();
-    recordController.recordVideo(h264Buffer, info);
-    if (streaming) getH264DataRtp(h264Buffer, info);
+  public void setAudioExtractor(Extractor extractor) {
+    audioDecoder.setExtractor(extractor);
   }
 
-  @Override
-  public void onVideoFormat(MediaFormat mediaFormat) {
-    recordController.setVideoFormat(mediaFormat, !audioEnabled);
-  }
+  protected abstract void onVideoInfoImp(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps);
 
-  protected abstract void getAacDataRtp(ByteBuffer aacBuffer, MediaCodec.BufferInfo info);
+  protected abstract void getVideoDataImp(ByteBuffer videoBuffer, MediaCodec.BufferInfo info);
 
-  @Override
-  public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    recordController.recordAudio(aacBuffer, info);
-    if (streaming) getAacDataRtp(aacBuffer, info);
-  }
-
-  @Override
-  public void onAudioFormat(MediaFormat mediaFormat) {
-    recordController.setAudioFormat(mediaFormat, !videoEnabled);
-  }
-
-  @Override
-  public void inputPCMData(Frame frame) {
-    if (audioTrackPlayer != null) {
-      audioTrackPlayer.write(frame.getBuffer(), frame.getOffset(), frame.getSize());
-    }
-    audioEncoder.inputPCMData(frame);
-  }
+  protected abstract void getAudioDataImp(ByteBuffer audioBuffer, MediaCodec.BufferInfo info);
 
   public void setRecordController(BaseRecordController recordController) {
     if (!isRecording()) this.recordController = recordController;
   }
 
-  public abstract void setLogs(boolean enable);
+  private final GetMicrophoneData getMicrophoneData = frame -> {
+    if (audioTrackPlayer != null) {
+      audioTrackPlayer.write(frame.getBuffer(), frame.getOffset(), frame.getSize());
+    }
+    audioEncoder.inputPCMData(frame);
+  };
 
-  public abstract void setCheckServerAlive(boolean enable);
+  private final GetAudioData getAudioData = new GetAudioData() {
+    @Override
+    public void getAudioData(@NonNull ByteBuffer audioBuffer, @NonNull MediaCodec.BufferInfo info) {
+      recordController.recordAudio(audioBuffer, info);
+      if (streaming) getAudioDataImp(audioBuffer, info);
+    }
+
+    @Override
+    public void onAudioFormat(@NonNull MediaFormat mediaFormat) {
+      recordController.setAudioFormat(mediaFormat, !videoEnabled);
+    }
+  };
+
+  private final GetVideoData getVideoData = new GetVideoData() {
+    @Override
+    public void onVideoInfo(@NonNull ByteBuffer sps, @Nullable ByteBuffer pps, @Nullable ByteBuffer vps) {
+      onVideoInfoImp(sps.duplicate(),  pps != null ? pps.duplicate(): null, vps != null ? vps.duplicate() : null);
+    }
+
+    @Override
+    public void getVideoData(@NonNull ByteBuffer videoBuffer, @NonNull MediaCodec.BufferInfo info) {
+      fpsListener.calculateFps();
+      recordController.recordVideo(videoBuffer, info);
+      if (streaming) getVideoDataImp(videoBuffer, info);
+    }
+
+    @Override
+    public void onVideoFormat(@NonNull MediaFormat mediaFormat) {
+      recordController.setVideoFormat(mediaFormat, !audioEnabled);
+    }
+  };
+
+  private final DecoderInterface decoderInterface = new DecoderInterface() {
+
+    @Override
+    public void onLoop() {
+      videoDecoder.reset(glInterface.getSurface());
+      audioDecoder.reset(null);
+    }
+  };
+
+  public abstract StreamBaseClient getStreamClient();
+
+  public void setVideoCodec(VideoCodec codec) {
+    setVideoCodecImp(codec);
+    recordController.setVideoCodec(codec);
+    String type = switch (codec) {
+      case H264 -> CodecUtil.H264_MIME;
+      case H265 -> CodecUtil.H265_MIME;
+      case AV1 -> CodecUtil.AV1_MIME;
+    };
+    videoEncoder.setType(type);
+  }
+
+  public void setAudioCodec(AudioCodec codec) {
+    setAudioCodecImp(codec);
+    recordController.setAudioCodec(codec);
+    String type = switch (codec) {
+      case G711 -> CodecUtil.G711_MIME;
+      case AAC -> CodecUtil.AAC_MIME;
+      case OPUS -> CodecUtil.OPUS_MIME;
+    };
+    audioEncoder.setType(type);
+  }
+
+  protected abstract void setVideoCodecImp(VideoCodec codec);
+  protected abstract void setAudioCodecImp(AudioCodec codec);
 }

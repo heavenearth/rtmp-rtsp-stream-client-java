@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,6 @@ enum class PacketType(val value: Int) {
   DATA(0), CONTROL(1);
 
   companion object {
-    infix fun from(value: Int): PacketType = PacketType.values().firstOrNull { it.value == value } ?: throw IOException("unknown packet type: $value")
+    infix fun from(value: Int): PacketType = entries.firstOrNull { it.value == value } ?: throw IOException("unknown packet type: $value")
   }
 }

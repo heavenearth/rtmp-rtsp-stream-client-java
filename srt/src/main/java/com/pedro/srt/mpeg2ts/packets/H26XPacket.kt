@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
 
 package com.pedro.srt.mpeg2ts.packets
 
-import android.media.MediaCodec
-import android.os.Build
 import android.util.Log
+import com.pedro.common.frame.MediaFrame
+import com.pedro.common.removeInfo
+import com.pedro.common.toByteArray
 import com.pedro.srt.mpeg2ts.Codec
 import com.pedro.srt.mpeg2ts.MpegTsPacket
 import com.pedro.srt.mpeg2ts.MpegType
@@ -27,7 +28,6 @@ import com.pedro.srt.mpeg2ts.PesType
 import com.pedro.srt.mpeg2ts.psi.PsiManager
 import com.pedro.srt.srt.packets.data.PacketPosition
 import com.pedro.srt.utils.startWith
-import com.pedro.srt.utils.toByteArray
 import java.nio.ByteBuffer
 
 /**
@@ -48,18 +48,14 @@ class H26XPacket(
   private var codec = Codec.AVC
   private var configSend = false
 
-  override fun createAndSendPacket(
-    byteBuffer: ByteBuffer,
-    info: MediaCodec.BufferInfo,
-    callback: (MpegTsPacket) -> Unit
+  override suspend fun createAndSendPacket(
+    mediaFrame: MediaFrame,
+    callback: suspend (List<MpegTsPacket>) -> Unit
   ) {
-    val length = info.size
+    val fixedBuffer = mediaFrame.data.removeInfo(mediaFrame.info)
+    val length = fixedBuffer.remaining()
     if (length < 0) return
-    val isKeyFrame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-      info.flags == MediaCodec.BUFFER_FLAG_KEY_FRAME
-    } else {
-      info.flags == MediaCodec.BUFFER_FLAG_SYNC_FRAME
-    }
+    val isKeyFrame = mediaFrame.info.isKeyFrame
 
     if (codec == Codec.HEVC) {
       val sps = this.sps
@@ -77,38 +73,32 @@ class H26XPacket(
         return
       }
     }
-
-    byteBuffer.rewind()
-    val validBuffer = fixHeader(byteBuffer, isKeyFrame)
+    val validBuffer = fixHeader(fixedBuffer, isKeyFrame)
     val payload = ByteArray(validBuffer.remaining())
     validBuffer.get(payload, 0, validBuffer.remaining())
 
-    val pes = Pes(psiManager.getVideoPid().toInt(), isKeyFrame, PesType.VIDEO, info.presentationTimeUs, ByteBuffer.wrap(payload))
+    val pes = Pes(psiManager.getVideoPid().toInt(), isKeyFrame, PesType.VIDEO, mediaFrame.info.timestamp, ByteBuffer.wrap(payload))
     val mpeg2tsPackets = mpegTsPacketizer.write(listOf(pes))
     val chunked = mpeg2tsPackets.chunked(chunkSize)
+    val packets = mutableListOf<MpegTsPacket>()
     chunked.forEachIndexed { index, chunks ->
       val size = chunks.sumOf { it.size }
       val buffer = ByteBuffer.allocate(size)
       chunks.forEach {
         buffer.put(it)
       }
-      val packetPosition = if (index == 0 && chunked.size == 1) {
-        PacketPosition.SINGLE
-      } else if (index == 0) {
-        PacketPosition.FIRST
-      } else if (index == chunked.size - 1) {
-        PacketPosition.LAST
-      } else {
-        PacketPosition.MIDDLE
-      }
-      callback(MpegTsPacket(buffer.array(), MpegType.VIDEO, packetPosition))
+      val packetPosition = PacketPosition.SINGLE
+      packets.add(MpegTsPacket(buffer.array(), MpegType.VIDEO, packetPosition, isKeyFrame))
     }
+    if (packets.isNotEmpty()) callback(packets)
   }
 
-  override fun resetPacket() {
-    vps = null
-    sps = null
-    pps = null
+  override fun resetPacket(resetInfo: Boolean) {
+    if (resetInfo) {
+      vps = null
+      sps = null
+      pps = null
+    }
     configSend = false
   }
 
@@ -116,9 +106,9 @@ class H26XPacket(
     this.codec = codec
   }
 
-  fun sendVideoInfo(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
+  fun sendVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
     this.sps = getVideoInfoData(sps)
-    this.pps = getVideoInfoData(pps)
+    this.pps = if (pps != null) getVideoInfoData(pps) else null
     this.vps = if (vps != null) getVideoInfoData(vps) else null
   }
 
@@ -136,13 +126,22 @@ class H26XPacket(
       bufferWithPrefix.put(noHeaderBuffer)
       noHeaderBuffer = bufferWithPrefix
     }
-    return if (isKeyFrame && !configSend) { //add video info to first keyframe
+    return if (isKeyFrame) { //add video info to first keyframe
       val vps = this.vps ?: byteArrayOf()
       val sps = this.sps ?: byteArrayOf()
       val pps = this.pps ?: byteArrayOf()
-      val keyExtraSize = vps.size + sps.size + pps.size
-      val validBuffer = ByteBuffer.allocate(noHeaderBuffer.remaining() + keyExtraSize)
+      val audSize = if (codec == Codec.AVC) 6 else 7
       val videoHeader = vps.plus(sps).plus(pps)
+      val validBuffer = ByteBuffer.allocate(audSize + videoHeader.size + noHeaderBuffer.remaining())
+      validBuffer.putInt(0x00000001)
+      if (codec == Codec.AVC) {
+        validBuffer.put(0x09.toByte())
+        validBuffer.put(0xf0.toByte())
+      } else {
+        validBuffer.put(0x46.toByte())
+        validBuffer.put(0x01.toByte())
+        validBuffer.put(0x50.toByte())
+      }
       validBuffer.put(videoHeader)
       validBuffer.put(noHeaderBuffer.toByteArray())
       validBuffer.rewind()

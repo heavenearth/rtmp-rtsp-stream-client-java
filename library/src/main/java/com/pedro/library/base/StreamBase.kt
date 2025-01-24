@@ -1,33 +1,58 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.library.base
 
 import android.content.Context
 import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.media.projection.MediaProjection
 import android.os.Build
-import android.util.Range
 import android.util.Size
-import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
+import android.view.TextureView.SurfaceTextureListener
 import androidx.annotation.RequiresApi
+import com.pedro.common.AudioCodec
+import com.pedro.common.VideoCodec
+import com.pedro.encoder.EncoderErrorCallback
 import com.pedro.encoder.Frame
+import com.pedro.encoder.TimestampMode
 import com.pedro.encoder.audio.AudioEncoder
-import com.pedro.encoder.audio.GetAacData
+import com.pedro.encoder.audio.GetAudioData
 import com.pedro.encoder.input.audio.GetMicrophoneData
-import com.pedro.encoder.input.video.CameraHelper
+import com.pedro.encoder.input.sources.audio.AudioSource
+import com.pedro.encoder.input.sources.audio.NoAudioSource
+import com.pedro.encoder.input.sources.video.NoVideoSource
+import com.pedro.encoder.input.sources.video.VideoSource
+import com.pedro.encoder.utils.CodecUtil
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
 import com.pedro.library.base.recording.BaseRecordController
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.util.AndroidMuxerRecordController
-import com.pedro.library.util.sources.AudioManager
-import com.pedro.library.util.sources.VideoManager
+import com.pedro.library.util.FpsListener
+import com.pedro.library.util.streamclient.StreamBaseClient
 import com.pedro.library.view.GlStreamInterface
 import java.nio.ByteBuffer
+import kotlin.math.max
+
 
 /**
  * Created by pedro on 21/2/22.
@@ -39,66 +64,111 @@ import java.nio.ByteBuffer
  */
 @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
 abstract class StreamBase(
-  context: Context,
-  videoSource: VideoManager.Source,
-  audioSource: AudioManager.Source
-): GetVideoData, GetAacData, GetMicrophoneData {
+    context: Context,
+    vSource: VideoSource,
+    aSource: AudioSource
+) {
 
+  private val getMicrophoneData = object: GetMicrophoneData {
+    override fun inputPCMData(frame: Frame) {
+      audioEncoder.inputPCMData(frame)
+    }
+  }
   //video and audio encoders
-  private val videoEncoder by lazy { VideoEncoder(this) }
-  private val audioEncoder by lazy { AudioEncoder(this) }
+  private val videoEncoder by lazy { VideoEncoder(getVideoData) }
+  private val videoEncoderRecord by lazy { VideoEncoder(getVideoDataRecord) }
+  private val audioEncoder by lazy { AudioEncoder(getAacData) }
   //video render
   private val glInterface = GlStreamInterface(context)
-  //video and audio sources
-  private val videoManager = VideoManager(context, videoSource)
-  private val audioManager by lazy { AudioManager(this, audioSource) }
   //video/audio record
   private var recordController: BaseRecordController = AndroidMuxerRecordController()
+  private val fpsListener = FpsListener()
   var isStreaming = false
     private set
   var isOnPreview = false
     private set
   val isRecording: Boolean
     get() = recordController.isRunning
-  val videoSource = videoManager.source
-  val audioSource = audioManager.source
-
-  init {
-    glInterface.init()
-  }
+  var videoSource: VideoSource = vSource
+    private set
+  var audioSource: AudioSource = aSource
+    private set
+  private var differentRecordResolution = false
 
   /**
    * Necessary only one time before start preview, stream or record.
    * If you want change values stop preview, stream and record is necessary.
    *
+   * @param profile codec value from MediaCodecInfo.CodecProfileLevel class
+   * @param level codec value from MediaCodecInfo.CodecProfileLevel class
+   *
+   * @throws IllegalArgumentException if current video parameters are not supported by the VideoSource
+   * @throws IllegalArgumentException if you use differentRecordResolution but the aspect ratio is not the same than stream resolution
    * @return True if success, False if failed
    */
+  @Throws(IllegalArgumentException::class)
   @JvmOverloads
-  fun prepareVideo(width: Int, height: Int, bitrate: Int, fps: Int = 30, iFrameInterval: Int = 2,
-    avcProfile: Int = -1, avcProfileLevel: Int = -1): Boolean {
-    val videoResult = videoManager.createVideoManager(width, height, fps)
-    if (videoResult) {
-      glInterface.setEncoderSize(width, height)
-      return videoEncoder.prepareVideoEncoder(width, height, fps, bitrate, 0,
-        iFrameInterval, FormatVideoEncoder.SURFACE, avcProfile, avcProfileLevel)
+  fun prepareVideo(
+    width: Int, height: Int, bitrate: Int, fps: Int = 30, iFrameInterval: Int = 2,
+    rotation: Int = 0, profile: Int = -1, level: Int = -1,
+    recordWidth: Int = 0, recordHeight: Int = 0, recordBitrate: Int = bitrate
+  ): Boolean {
+    if (isStreaming || isRecording || isOnPreview) {
+      throw IllegalStateException("Stream, record and preview must be stopped before prepareVideo")
     }
-    return videoResult
+    differentRecordResolution = false
+    if (recordWidth > 0 && recordHeight > 0) {
+      if (recordWidth.toDouble() / recordHeight.toDouble() != width.toDouble() / height.toDouble()) {
+        throw IllegalArgumentException("The aspect ratio of record and stream resolution must be the same")
+      }
+      differentRecordResolution = true
+    }
+    val videoResult = videoSource.init(max(width, recordWidth), max(height, recordHeight), fps, rotation)
+    if (videoResult) {
+      if (differentRecordResolution) {
+        //using different record resolution
+        if (rotation == 90 || rotation == 270) glInterface.setEncoderRecordSize(recordHeight, recordWidth)
+        else glInterface.setEncoderRecordSize(recordWidth, recordHeight)
+      }
+      if (rotation == 90 || rotation == 270) glInterface.setEncoderSize(height, width)
+      else glInterface.setEncoderSize(width, height)
+      val isPortrait = rotation == 90 || rotation == 270
+      glInterface.setIsPortrait(isPortrait)
+      glInterface.setCameraOrientation(if (rotation == 0) 270 else rotation - 90)
+      glInterface.forceOrientation(videoSource.getOrientationConfig())
+      if (differentRecordResolution) {
+        val result = videoEncoderRecord.prepareVideoEncoder(recordWidth, recordHeight, fps, recordBitrate, rotation,
+          iFrameInterval, FormatVideoEncoder.SURFACE, profile, level)
+        if (!result) return false
+      }
+      val result = videoEncoder.prepareVideoEncoder(width, height, fps, bitrate, rotation,
+        iFrameInterval, FormatVideoEncoder.SURFACE, profile, level)
+      forceFpsLimit(true)
+      return result
+    }
+    return false
   }
 
   /**
    * Necessary only one time before start stream or record.
    * If you want change values stop stream and record is necessary.
    *
+   * @throws IllegalArgumentException if current video parameters are not supported by the AudioSource
    * @return True if success, False if failed
    */
+  @Throws(IllegalArgumentException::class)
   @JvmOverloads
   fun prepareAudio(sampleRate: Int, isStereo: Boolean, bitrate: Int, echoCanceler: Boolean = false,
     noiseSuppressor: Boolean = false): Boolean {
-    val audioResult = audioManager.createAudioManager(sampleRate, isStereo, echoCanceler, noiseSuppressor)
-    if (audioResult) {
-      return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo, audioManager.getMaxInputSize())
+    if (isStreaming || isRecording) {
+      throw IllegalStateException("Stream and record must be stopped before prepareAudio")
     }
-    return audioResult
+    val audioResult = audioSource.init(sampleRate, isStereo, echoCanceler, noiseSuppressor)
+    if (audioResult) {
+      onAudioInfoImp(sampleRate, isStereo)
+      return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo)
+    }
+    return false
   }
 
   /**
@@ -107,10 +177,56 @@ abstract class StreamBase(
    * Must be called after prepareVideo and prepareAudio
    */
   fun startStream(endPoint: String) {
+    if (isStreaming) throw IllegalStateException("Stream already started, stopStream before startStream again")
     isStreaming = true
-    rtpStartStream(endPoint)
+    startStreamImp(endPoint)
     if (!isRecording) startSources()
-    else videoEncoder.requestKeyframe()
+    else requestKeyframe()
+  }
+
+  /**
+   * Force VideoEncoder to produce a keyframe. Ignored if not recording or streaming.
+   * This could be ignored depend of the Codec implementation in each device.
+   */
+  fun requestKeyframe() {
+    if (videoEncoder.isRunning) {
+      videoEncoder.requestKeyframe()
+    }
+    if (videoEncoderRecord.isRunning) {
+      videoEncoderRecord.requestKeyframe()
+    }
+  }
+
+  /**
+   * Set video bitrate in bits per second while streaming.
+   *
+   * @param bitrate in bits per second.
+   */
+  fun setVideoBitrateOnFly(bitrate: Int) {
+    videoEncoder.setVideoBitrateOnFly(bitrate)
+  }
+
+  /**
+   * Force stream to work with fps selected in prepareVideo method. Must be called before prepareVideo.
+   * Must be called after prepareVideo
+   *
+   * @param enabled true to enabled, false to disable, enabled by default.
+   */
+  fun forceFpsLimit(enabled: Boolean) {
+    val fps = if (enabled) videoEncoder.fps else 0
+    videoEncoder.setForceFps(fps)
+    videoEncoderRecord.setForceFps(fps)
+    glInterface.forceFpsLimit(fps)
+  }
+
+  /**
+   * @param codecTypeVideo force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   * @param codecTypeAudio force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
+   */
+  fun forceCodecType(codecTypeVideo: CodecUtil.CodecType, codecTypeAudio: CodecUtil.CodecType) {
+    videoEncoder.forceCodecType(codecTypeVideo)
+    videoEncoderRecord.forceCodecType(codecTypeVideo)
+    audioEncoder.forceCodecType(codecTypeAudio)
   }
 
   /**
@@ -123,7 +239,7 @@ abstract class StreamBase(
    */
   fun stopStream(): Boolean {
     isStreaming = false
-    rtpStopStream()
+    stopStreamImp()
     if (!isRecording) {
       stopSources()
       return prepareEncoders()
@@ -137,9 +253,13 @@ abstract class StreamBase(
    * Must be called after prepareVideo and prepareAudio.
    */
   fun startRecord(path: String, listener: RecordController.Listener) {
+    if (isRecording) throw IllegalStateException("Record already started, stopRecord before startRecord again")
     recordController.startRecord(path, listener)
     if (!isStreaming) startSources()
-    else videoEncoder.requestKeyframe()
+    else {
+      videoEncoder.requestKeyframe()
+      videoEncoderRecord.requestKeyframe()
+    }
   }
 
   /**
@@ -158,19 +278,72 @@ abstract class StreamBase(
   }
 
   /**
+   * Pause record. Ignored if you are not recording.
+   */
+  fun pauseRecord() {
+    recordController.pauseRecord()
+  }
+
+  /**
+   * Resume record. Ignored if you are not recording and in pause mode.
+   */
+  fun resumeRecord() {
+    recordController.resumeRecord()
+  }
+
+  /**
    * Start preview in the selected TextureView.
    * Must be called after prepareVideo.
    */
-  fun startPreview(textureView: TextureView) {
-    startPreview(Surface(textureView.surfaceTexture), textureView.width, textureView.height)
+  @JvmOverloads
+  fun startPreview(textureView: TextureView, autoHandle: Boolean = false) {
+    if (autoHandle) {
+      textureView.surfaceTextureListener = object: SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+          if (!isOnPreview) startPreview(textureView)
+        }
+
+        override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
+          getGlInterface().setPreviewResolution(width, height)
+        }
+
+        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+          if (isOnPreview) stopPreview()
+          return true
+        }
+
+        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
+      }
+      if (textureView.isAvailable && !isOnPreview) startPreview(textureView)
+    } else {
+      startPreview(Surface(textureView.surfaceTexture), textureView.width, textureView.height)
+    }
   }
 
   /**
    * Start preview in the selected SurfaceView.
    * Must be called after prepareVideo.
    */
-  fun startPreview(surfaceView: SurfaceView) {
-    startPreview(surfaceView.holder.surface, surfaceView.width, surfaceView.height)
+  @JvmOverloads
+  fun startPreview(surfaceView: SurfaceView, autoHandle: Boolean = false) {
+    if (autoHandle) {
+      surfaceView.holder.addCallback(object: SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+          if (!isOnPreview) startPreview(surfaceView)
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+          getGlInterface().setPreviewResolution(width, height)
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+          if (isOnPreview) stopPreview()
+        }
+      })
+      if (surfaceView.holder.surface.isValid && !isOnPreview) startPreview(surfaceView)
+    } else {
+      startPreview(surfaceView.holder.surface, surfaceView.width, surfaceView.height)
+    }
   }
 
   /**
@@ -187,10 +360,11 @@ abstract class StreamBase(
    */
   fun startPreview(surface: Surface, width: Int, height: Int) {
     if (!surface.isValid) throw IllegalArgumentException("Make sure the Surface is valid")
+    if (isOnPreview) throw IllegalStateException("Preview already started, stopPreview before startPreview again")
     isOnPreview = true
-    if (!glInterface.running) glInterface.start()
-    if (!videoManager.isRunning()) {
-      videoManager.start(glInterface.getSurfaceTexture())
+    if (!glInterface.isRunning) glInterface.start()
+    if (!videoSource.isRunning()) {
+      videoSource.start(glInterface.surfaceTexture)
     }
     glInterface.attachPreview(surface)
     glInterface.setPreviewResolution(width, height)
@@ -202,7 +376,7 @@ abstract class StreamBase(
    */
   fun stopPreview() {
     isOnPreview = false
-    if (!isStreaming && !isRecording) videoManager.stop()
+    if (!isStreaming && !isRecording) videoSource.stop()
     glInterface.deAttachPreview()
     if (!isStreaming && !isRecording) glInterface.stop()
   }
@@ -210,241 +384,80 @@ abstract class StreamBase(
   /**
    * Change video source to Camera1 or Camera2.
    * Must be called after prepareVideo.
-   */
-  fun changeVideoSourceCamera(source: VideoManager.Source) {
-    glInterface.setForceRender(false)
-    videoManager.changeSourceCamera(source)
-  }
-
-  /**
-   * Change video source to Screen.
-   * Must be called after prepareVideo.
-   */
-  fun changeVideoSourceScreen(mediaProjection: MediaProjection) {
-    glInterface.setForceRender(true)
-    videoManager.changeSourceScreen(mediaProjection)
-  }
-
-  /**
-   * Disable video stopping process video frames from video source.
-   * You can return to camera/screen video using changeVideoSourceCamera/changeVideoSourceScreen
    *
-   * @NOTE:
-   * This isn't recommended because it isn't supported in all servers/players.
-   * Use BlackFilterRender to send only black images is recommended.
+   * @throws IllegalArgumentException if current video parameters are not supported by the VideoSource
    */
-  fun changeVideoSourceDisabled() {
-    glInterface.setForceRender(false)
-    videoManager.changeVideoSourceDisabled()
+  @Throws(IllegalArgumentException::class)
+  fun changeVideoSource(source: VideoSource) {
+    val wasRunning = videoSource.isRunning()
+    val wasCreated = videoSource.created
+    if (wasCreated) {
+      var width = videoEncoder.width
+      var height = videoEncoder.height
+      if (differentRecordResolution) {
+        width = max(width, videoEncoderRecord.width)
+        height = max(height, videoEncoderRecord.height)
+      }
+      source.init(width, height, videoEncoder.fps, videoEncoder.rotation)
+    }
+    videoSource.stop()
+    videoSource.release()
+    if (wasRunning) source.start(glInterface.surfaceTexture)
+    glInterface.forceOrientation(source.getOrientationConfig())
+    videoSource = source
   }
 
   /**
-   * Change audio source to Microphone.
+   * Change audio source.
    * Must be called after prepareAudio.
+   *
+   * @throws IllegalArgumentException if current video parameters are not supported by the AudioSource
    */
-  fun changeAudioSourceMicrophone() {
-    audioManager.changeSourceMicrophone()
+  @Throws(IllegalArgumentException::class)
+  fun changeAudioSource(source: AudioSource) {
+    val wasRunning = audioSource.isRunning()
+    val wasCreated = audioSource.created
+    if (wasCreated) source.init(audioSource.sampleRate, audioSource.isStereo, audioSource.echoCanceler, audioSource.noiseSuppressor)
+    audioSource.stop()
+    audioSource.release()
+    if (wasRunning) source.start(getMicrophoneData)
+    audioSource = source
   }
 
   /**
-   * Change audio source to Internal.
-   * Must be called after prepareAudio.
+   * Set the mode to calculate timestamp. By default CLOCK.
+   * Must be called before startRecord/startStream or it will be ignored.
    */
-  @RequiresApi(Build.VERSION_CODES.Q)
-  fun changeAudioSourceInternal(mediaProjection: MediaProjection) {
-    audioManager.changeSourceInternal(mediaProjection)
+  fun setTimestampMode(timestampModeVideo: TimestampMode, timestampModeAudio: TimestampMode) {
+    videoEncoder.setTimestampMode(timestampModeVideo)
+    videoEncoderRecord.setTimestampMode(timestampModeVideo)
+    audioEncoder.setTimestampMode(timestampModeAudio)
   }
 
   /**
-   * Disable audio stopping process audio frames from audio source.
-   * You can return to microphone/internal audio using changeAudioSourceMicrophone/changeAudioSourceInternal
-   *
-   * @NOTE:
-   * This isn't recommended because it isn't supported in all servers/players.
-   * Use mute and unMute to send empty audio is recommended
+   * Set a callback to know errors related with Video/Audio encoders
+   * @param encoderErrorCallback callback to use, null to remove
    */
-  fun changeAudioSourceDisabled() {
-    audioManager.changeAudioSourceDisabled()
+  fun setEncoderErrorCallback(encoderErrorCallback: EncoderErrorCallback?) {
+    videoEncoder.setEncoderErrorCallback(encoderErrorCallback)
+    videoEncoderRecord.setEncoderErrorCallback(encoderErrorCallback)
+    audioEncoder.setEncoderErrorCallback(encoderErrorCallback)
   }
 
   /**
-   * Set a custom size of audio buffer input.
-   * If you set 0 or less you can disable it to use library default value.
-   * Must be called before of prepareAudio method.
-   *
-   * @param size in bytes. Recommended multiple of 1024 (2048, 4096, 8196, etc)
+   * @param callback get fps while record or stream
    */
-  fun setAudioMaxInputSize(size: Int) {
-    audioManager.setMaxInputSize(size)
+  fun setFpsListener(callback: FpsListener.Callback?) {
+    fpsListener.setCallback(callback)
   }
-
-  /**
-   * Mute microphone or internal audio.
-   * Must be called after prepareAudio.
-   */
-  fun mute() {
-    audioManager.mute()
-  }
-
-  /**
-   * Mute microphone or internal audio.
-   * Must be called after prepareAudio.
-   */
-  fun unMute() {
-    audioManager.unMute()
-  }
-
-  /**
-   * Check if microphone or internal audio is muted.
-   * Must be called after prepareAudio.
-   */
-  fun isMuted(): Boolean = audioManager.isMuted()
-
-  /**
-   * Switch between front or back camera if using Camera1 or Camera2.
-   * Must be called after prepareVideo.
-   */
-  fun switchCamera() {
-    videoManager.switchCamera()
-  }
-
-  /**
-   * get if using front or back camera with Camera1 or Camera2.
-   * Must be called after prepareVideo.
-   */
-  fun getCameraFacing(): CameraHelper.Facing = videoManager.getCameraFacing()
-
-  /**
-   * Get camera resolutions.
-   *
-   * @param source select camera source (Camera1 or Camera2) of the required resolutions.
-   * @param facing indicate if resolutions provide from front camera or back camera.
-   */
-  fun getCameraResolutions(source: VideoManager.Source, facing: CameraHelper.Facing): List<Size> {
-    return videoManager.getCameraResolutions(source, facing)
-  }
-
-  /**
-   * Set exposure to Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun setExposure(level: Int) {
-    videoManager.setExposure(level)
-  }
-
-  /**
-   * @return exposure of Camera1 or Camera2. 0 with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will return 0.
-   */
-  fun getExposure(): Int = videoManager.getExposure()
-
-  /**
-   * Enable lantern using Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun enableLantern() {
-    videoManager.enableLantern()
-  }
-
-  /**
-   * Disable lantern using Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun disableLantern() {
-    videoManager.disableLantern()
-  }
-
-  /**
-   * @return lantern state using Camera1 or Camera2. False with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will return false.
-   */
-  fun isLanternEnabled(): Boolean = videoManager.isLanternEnabled()
-
-  /**
-   * Enable auto focus using Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun enableAutoFocus() {
-    videoManager.enableAutoFocus()
-  }
-
-  /**
-   * Disable auto focus using Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun disableAutoFocus() {
-    videoManager.disableAutoFocus()
-  }
-
-  /**
-   * @return auto focus state using Camera1 or Camera2. False with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will return false.
-   */
-  fun isAutoFocusEnabled(): Boolean = videoManager.isAutoFocusEnabled()
-
-  /**
-   * Set zoom to Camera1 or Camera2. Ignored with other video source.
-   * This method is used with onTouch event to implement zoom with gestures.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun setZoom(event: MotionEvent) {
-    videoManager.setZoom(event)
-  }
-
-  /**
-   * Set zoom to Camera1 or Camera2. Ignored with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will be ignored.
-   */
-  fun setZoom(level: Float) {
-    videoManager.setZoom(level)
-  }
-
-  /**
-   * @return zoom range (min and max) using Camera1 or Camera2. Range(0f, 0f) with other video source
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will return Range(0f, 0f).
-   */
-  fun getZoomRange(): Range<Float> = videoManager.getZoomRange()
-
-  /**
-   * @return current zoom using Camera1 or Camera2. 0f with other video source.
-   *
-   * Must be called with isOnPreview, isStreaming or isRecording true or will return 0f.
-   */
-  fun getZoom(): Float = videoManager.getZoom()
 
   /**
    * Change stream orientation depend of activity orientation.
-   * This method affect ro preview and stream.
+   * This method affect to preview and stream.
    * Must be called after prepareVideo.
    */
   fun setOrientation(orientation: Int) {
     glInterface.setCameraOrientation(orientation)
-  }
-
-  /**
-   * Retries to connect with the given delay. You can pass an optional backupUrl
-   * if you'd like to connect to your backup server instead of the original one.
-   * Given backupUrl replaces the original one.
-   */
-  @JvmOverloads
-  fun reTry(delay: Long, reason: String, backupUrl: String? = null): Boolean {
-    val result = shouldRetry(reason)
-    if (result) {
-      videoEncoder.requestKeyframe()
-      reConnect(delay, backupUrl)
-    }
-    return result
   }
 
   /**
@@ -454,6 +467,10 @@ abstract class StreamBase(
    */
   fun getGlInterface(): GlStreamInterface = glInterface
 
+  /**
+   * Replace the current BaseRecordController.
+   * This method allow record in other format or even create your custom implementation and record in a new format.
+   */
   fun setRecordController(recordController: BaseRecordController) {
     if (!isRecording) this.recordController = recordController
   }
@@ -463,15 +480,10 @@ abstract class StreamBase(
    * start and stop rendering must be managed by the user.
    */
   fun getSurfaceTexture(): SurfaceTexture {
-    if (videoSource != VideoManager.Source.DISABLED) {
+    if (videoSource !is NoVideoSource) {
       throw IllegalStateException("getSurfaceTexture only available with VideoManager.Source.DISABLED")
     }
-    return glInterface.getSurfaceTexture()
-  }
-
-  protected fun setVideoMime(videoMime: String) {
-    recordController.setVideoMime(videoMime)
-    videoEncoder.type = videoMime
+    return glInterface.surfaceTexture
   }
 
   protected fun getVideoResolution() = Size(videoEncoder.width, videoEncoder.height)
@@ -479,78 +491,163 @@ abstract class StreamBase(
   protected fun getVideoFps() = videoEncoder.fps
 
   private fun startSources() {
-    if (!glInterface.running) glInterface.start()
-    if (!videoManager.isRunning()) {
-      videoManager.start(glInterface.getSurfaceTexture())
+    if (!glInterface.isRunning) glInterface.start()
+    if (!videoSource.isRunning()) {
+      videoSource.start(glInterface.surfaceTexture)
     }
-    audioManager.start()
-    videoEncoder.start()
-    audioEncoder.start()
+    audioSource.start(getMicrophoneData)
+    val startTs = System.nanoTime() / 1000
+    videoEncoder.start(startTs)
+    if (differentRecordResolution) videoEncoderRecord.start(startTs)
+    audioEncoder.start(startTs)
     glInterface.addMediaCodecSurface(videoEncoder.inputSurface)
+    if (differentRecordResolution) glInterface.addMediaCodecRecordSurface(videoEncoderRecord.inputSurface)
   }
 
   private fun stopSources() {
-    if (!isOnPreview) videoManager.stop()
-    audioManager.stop()
-    videoEncoder.stop()
-    audioEncoder.stop()
+    if (!isOnPreview) videoSource.stop()
+    audioSource.stop()
     glInterface.removeMediaCodecSurface()
+    glInterface.removeMediaCodecRecordSurface()
     if (!isOnPreview) glInterface.stop()
+    videoEncoder.stop()
+    videoEncoderRecord.stop()
+    audioEncoder.stop()
     if (!isRecording) recordController.resetFormats()
   }
 
+  /**
+   * Stop stream, record and preview and then release all resources.
+   * You must call it after finish all the work.
+   */
+  fun release() {
+    if (isStreaming) stopStream()
+    if (isRecording) stopRecord()
+    if (isOnPreview) stopPreview()
+    stopSources()
+    videoSource.release()
+    audioSource.release()
+  }
+
+  /**
+   * Reset VideoEncoder. Only recommended if a VideoEncoder class error is received in the EncoderErrorCallback
+   *
+   * @return true if success, false if failed
+   */
+  fun resetVideoEncoder(): Boolean {
+    if (differentRecordResolution) {
+      glInterface.removeMediaCodecRecordSurface()
+      val result = videoEncoderRecord.reset()
+      if (!result) return false
+      glInterface.addMediaCodecRecordSurface(videoEncoderRecord.inputSurface)
+    }
+    glInterface.removeMediaCodecSurface()
+    val result = videoEncoder.reset()
+    if (!result) return false
+    glInterface.addMediaCodecSurface(videoEncoder.inputSurface)
+    return true
+  }
+
+  /**
+   * Reset AudioEncoder. Only recommended if an AudioEncoder class error is received in the EncoderErrorCallback
+   *
+   * @return true if success, false if failed
+   */
+  fun resetAudioEncoder(): Boolean = audioEncoder.reset()
+
   private fun prepareEncoders(): Boolean {
+    if (differentRecordResolution) {
+      val result = videoEncoderRecord.prepareVideoEncoder()
+      if (!result) return false
+    }
     return videoEncoder.prepareVideoEncoder() && audioEncoder.prepareAudioEncoder()
   }
 
-  override fun inputPCMData(frame: Frame) {
-    audioEncoder.inputPCMData(frame)
+  private val getAacData: GetAudioData = object : GetAudioData {
+    override fun getAudioData(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      getAudioDataImp(audioBuffer, info)
+      recordController.recordAudio(audioBuffer, info)
+    }
+
+    override fun onAudioFormat(mediaFormat: MediaFormat) {
+      val isOnlyAudio = videoSource is NoVideoSource
+      recordController.setAudioFormat(mediaFormat, isOnlyAudio)
+    }
   }
 
-  override fun onVideoFormat(mediaFormat: MediaFormat) {
-    recordController.setVideoFormat(mediaFormat)
+  private val getVideoData: GetVideoData = object : GetVideoData {
+    override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
+      onVideoInfoImp(sps.duplicate(), pps?.duplicate(), vps?.duplicate())
+    }
+
+    override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      fpsListener.calculateFps()
+      getVideoDataImp(videoBuffer, info)
+      if (!differentRecordResolution) recordController.recordVideo(videoBuffer, info)
+    }
+
+    override fun onVideoFormat(mediaFormat: MediaFormat) {
+      if (!differentRecordResolution) {
+        val isOnlyVideo = audioSource is NoAudioSource
+        recordController.setVideoFormat(mediaFormat, isOnlyVideo)
+      }
+    }
   }
 
-  override fun onAudioFormat(mediaFormat: MediaFormat) {
-    recordController.setAudioFormat(mediaFormat)
+  private val getVideoDataRecord: GetVideoData = object : GetVideoData {
+    override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
+    }
+
+    override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      recordController.recordVideo(videoBuffer, info)
+    }
+
+    override fun onVideoFormat(mediaFormat: MediaFormat) {
+      val isOnlyVideo = audioSource is NoAudioSource
+      recordController.setVideoFormat(mediaFormat, isOnlyVideo)
+    }
   }
 
-  override fun onSpsPpsVps(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
-    onSpsPpsVpsRtp(sps.duplicate(), pps.duplicate(), vps?.duplicate())
+  protected abstract fun onAudioInfoImp(sampleRate: Int, isStereo: Boolean)
+  protected abstract fun startStreamImp(endPoint: String)
+  protected abstract fun stopStreamImp()
+  protected abstract fun onVideoInfoImp(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?)
+  protected abstract fun getVideoDataImp(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo)
+  protected abstract fun getAudioDataImp(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo)
+
+  abstract fun getStreamClient(): StreamBaseClient
+
+  /**
+   * Change VideoCodec used.
+   * This could fail depend of the Codec supported in each Protocol. For example AV1 is not supported in SRT
+   */
+  fun setVideoCodec(codec: VideoCodec) {
+    setVideoCodecImp(codec)
+    recordController.setVideoCodec(codec)
+    val type = when (codec) {
+      VideoCodec.H264 -> CodecUtil.H264_MIME
+      VideoCodec.H265 -> CodecUtil.H265_MIME
+      VideoCodec.AV1 -> CodecUtil.AV1_MIME
+    }
+    videoEncoder.type = type
+    videoEncoderRecord.type = type
   }
 
-  override fun getVideoData(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    getH264DataRtp(h264Buffer, info)
-    recordController.recordVideo(h264Buffer, info)
+  /**
+   * Change AudioCodec used.
+   * This could fail depend of the Codec supported in each Protocol. For example G711 is not supported in SRT
+   */
+  fun setAudioCodec(codec: AudioCodec) {
+    setAudioCodecImp(codec)
+    recordController.setAudioCodec(codec)
+    val type = when (codec) {
+      AudioCodec.G711 -> CodecUtil.G711_MIME
+      AudioCodec.AAC -> CodecUtil.AAC_MIME
+      AudioCodec.OPUS -> CodecUtil.OPUS_MIME
+    }
+    audioEncoder.type = type
   }
 
-  override fun getAacData(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    getAacDataRtp(aacBuffer, info)
-    recordController.recordAudio(aacBuffer, info)
-  }
-
-  protected abstract fun audioInfo(sampleRate: Int, isStereo: Boolean)
-  protected abstract fun rtpStartStream(endPoint: String)
-  protected abstract fun rtpStopStream()
-  protected abstract fun setAuthorization(user: String?, password: String?)
-  protected abstract fun onSpsPpsVpsRtp(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?)
-  protected abstract fun getH264DataRtp(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo)
-  protected abstract fun getAacDataRtp(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo)
-  protected abstract fun shouldRetry(reason: String): Boolean
-  protected abstract fun reConnect(delay: Long, backupUrl: String?)
-  abstract fun setReTries(reTries: Int)
-  abstract fun hasCongestion(): Boolean
-  abstract fun setLogs(enabled: Boolean)
-  abstract fun setCheckServerAlive(enabled: Boolean)
-  @Throws(RuntimeException::class)
-  abstract fun resizeCache(newSize: Int)
-  abstract fun getCacheSize(): Int
-  abstract fun getSentAudioFrames(): Long
-  abstract fun getSentVideoFrames(): Long
-  abstract fun getDroppedAudioFrames(): Long
-  abstract fun getDroppedVideoFrames(): Long
-  abstract fun resetSentAudioFrames()
-  abstract fun resetSentVideoFrames()
-  abstract fun resetDroppedAudioFrames()
-  abstract fun resetDroppedVideoFrames()
+  protected abstract fun setVideoCodecImp(codec: VideoCodec)
+  protected abstract fun setAudioCodecImp(codec: AudioCodec)
 }

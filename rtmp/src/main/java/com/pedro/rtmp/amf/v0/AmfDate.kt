@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package com.pedro.rtmp.amf.v0
 
+import com.pedro.common.TimeUtils
 import com.pedro.rtmp.utils.readUntil
 import java.io.IOException
 import java.io.InputStream
@@ -28,7 +29,7 @@ import java.nio.ByteBuffer
  * milliseconds from 1st Jan 1970 in UTC time zone.
  * timeZone value is a reserved value that should be 0x0000
  */
-class AmfDate(var date: Double = System.currentTimeMillis().toDouble()): AmfData() {
+class AmfDate(var date: Double = TimeUtils.getCurrentTimeMillis().toDouble()): AmfData() {
 
   @Throws(IOException::class)
   override fun readBody(input: InputStream) {

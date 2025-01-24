@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,20 @@ package com.pedro.rtsp.rtsp
 
 import android.media.MediaCodec
 import android.util.Log
+import com.pedro.common.AudioCodec
+import com.pedro.common.ConnectChecker
+import com.pedro.common.ConnectionFailed
+import com.pedro.common.UrlParser
+import com.pedro.common.VideoCodec
+import com.pedro.common.clone
+import com.pedro.common.frame.MediaFrame
+import com.pedro.common.onMainThread
+import com.pedro.common.socket.TcpStreamSocketImp
+import com.pedro.common.toMediaFrameInfo
+import com.pedro.common.validMessage
 import com.pedro.rtsp.rtsp.commands.CommandsManager
 import com.pedro.rtsp.rtsp.commands.Method
-import com.pedro.rtsp.utils.ConnectCheckerRtsp
-import com.pedro.rtsp.utils.CreateSSLSocket.createSSlSocket
 import com.pedro.rtsp.utils.RtpConstants
-import com.pedro.rtsp.utils.onMainThread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,25 +43,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.*
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.SocketAddress
-import java.net.SocketTimeoutException
+import java.net.URISyntaxException
 import java.nio.ByteBuffer
-import java.util.regex.Pattern
+import javax.net.ssl.TrustManager
 
 /**
  * Created by pedro on 10/02/17.
  */
-class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
+class RtspClient(private val connectChecker: ConnectChecker) {
 
   private val TAG = "RtspClient"
-  private val rtspUrlPattern = Pattern.compile("^rtsps?://([^/:]+)(?::(\\d+))*/([^/]+)/?([^*]*)$")
+
+  private val validSchemes = arrayOf("rtsp", "rtsps")
 
   //sockets objects
-  private var connectionSocket: Socket? = null
-  private var reader: BufferedReader? = null
-  private var writer: BufferedWriter? = null
+  private var socket: TcpStreamSocketImp? = null
   private var scope = CoroutineScope(Dispatchers.IO)
   private var scopeRetry = CoroutineScope(Dispatchers.IO)
   private var job: Job? = null
@@ -66,9 +70,10 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
 
   //for secure transport
   private var tlsEnabled = false
-  private val rtspSender: RtspSender = RtspSender(connectCheckerRtsp)
-  private var url: String? = null
+  private var certificates: TrustManager? = null
   private val commandsManager: CommandsManager = CommandsManager()
+  private val rtspSender: RtspSender = RtspSender(connectChecker, commandsManager)
+  private var url: String? = null
   private var doingRetry = false
   private var numRetry = 0
   private var reTries = 0
@@ -85,6 +90,13 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
     get() = rtspSender.getSentAudioFrames()
   val sentVideoFrames: Long
     get() = rtspSender.getSentVideoFrames()
+
+  /**
+   * Add certificates for TLS connection
+   */
+  fun addCertificates(certificates: TrustManager?) {
+    this.certificates = certificates
+  }
 
   /**
    * Check periodically if server is alive using Echo protocol.
@@ -136,7 +148,7 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
     return validReason && reTries > 0
   }
 
-  fun setVideoInfo(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
+  fun setVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
     Log.i(TAG, "send sps and pps")
     commandsManager.setVideoInfo(sps, pps, vps)
     if (mutex.isLocked) runCatching { mutex.unlock() }
@@ -146,8 +158,23 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
     commandsManager.setAudioInfo(sampleRate, isStereo)
   }
 
-  @JvmOverloads
-  fun connect(url: String?, isRetry: Boolean = false) {
+  fun setVideoCodec(videoCodec: VideoCodec) {
+    if (!isStreaming) {
+      commandsManager.videoCodec = videoCodec
+    }
+  }
+
+  fun setAudioCodec(audioCodec: AudioCodec) {
+    if (!isStreaming) {
+      commandsManager.audioCodec = audioCodec
+    }
+  }
+
+  fun connect(url: String?) {
+    connect(url, false)
+  }
+
+  fun connect(url: String?, isRetry: Boolean) {
     if (!isRetry) doingRetry = true
     if (!isStreaming || isRetry) {
       isStreaming = true
@@ -156,78 +183,74 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
         if (url == null) {
           isStreaming = false
           onMainThread {
-            connectCheckerRtsp.onConnectionFailedRtsp("Endpoint malformed, should be: rtsp://ip:port/appname/streamname")
+            connectChecker.onConnectionFailed("Endpoint malformed, should be: rtsp://ip:port/appname/streamname")
           }
           return@launch
         }
         this@RtspClient.url = url
         onMainThread {
-          connectCheckerRtsp.onConnectionStartedRtsp(url)
+          connectChecker.onConnectionStarted(url)
         }
-        val rtspMatcher = rtspUrlPattern.matcher(url)
-        if (rtspMatcher.matches()) {
-          tlsEnabled = (rtspMatcher.group(0) ?: "").startsWith("rtsps")
-        } else {
+
+        val urlParser = try {
+          UrlParser.parse(url, validSchemes)
+        } catch (e: URISyntaxException) {
           isStreaming = false
           onMainThread {
-            connectCheckerRtsp.onConnectionFailedRtsp("Endpoint malformed, should be: rtsp://ip:port/appname/streamname")
+            connectChecker.onConnectionFailed("Endpoint malformed, should be: rtsp://ip:port/appname/streamname")
           }
           return@launch
         }
-        val host = rtspMatcher.group(1) ?: ""
-        val port: Int = rtspMatcher.group(2)?.toInt() ?: if (tlsEnabled) 443 else 554
-        val streamName = if (rtspMatcher.group(4).isNullOrEmpty()) "" else "/" + rtspMatcher.group(4)
-        val path = "/" + rtspMatcher.group(3) + streamName
+
+        tlsEnabled = urlParser.scheme.endsWith("s")
+        val host = urlParser.host
+        val port = urlParser.port ?: if (tlsEnabled) 443 else 554
+        val path = urlParser.getFullPath()
+        if (path.isEmpty()) {
+          isStreaming = false
+          onMainThread {
+            connectChecker.onConnectionFailed("Endpoint malformed, should be: rtsp://ip:port/appname/streamname")
+          }
+          return@launch
+        }
+        val user = urlParser.getAuthUser()
+        val password = urlParser.getAuthPassword()
+        if (user != null && password != null) setAuthorization(user, password)
 
         val error = runCatching {
-          commandsManager.setUrl(host, port, path)
-          rtspSender.setSocketsInfo(commandsManager.protocol,
-            commandsManager.videoClientPorts,
-            commandsManager.audioClientPorts)
+          commandsManager.setUrl(host, port, "/$path")
           if (!commandsManager.audioDisabled) {
-            rtspSender.setAudioInfo(commandsManager.sampleRate)
+            rtspSender.setAudioInfo(commandsManager.sampleRate, commandsManager.isStereo)
           }
           if (!commandsManager.videoDisabled) {
-            if (commandsManager.sps == null || commandsManager.pps == null) {
+            if (!commandsManager.videoInfoReady()) {
               Log.i(TAG, "waiting for sps and pps")
               withTimeoutOrNull(5000) {
                 mutex.lock()
               }
-              if (commandsManager.sps == null || commandsManager.pps == null) {
+              if (!commandsManager.videoInfoReady()) {
                 onMainThread {
-                  connectCheckerRtsp.onConnectionFailedRtsp("sps or pps is null")
+                  connectChecker.onConnectionFailed("sps or pps is null")
                 }
                 return@launch
-              } else {
-                rtspSender.setVideoInfo(commandsManager.sps!!, commandsManager.pps!!, commandsManager.vps)
               }
             }
+            rtspSender.setVideoInfo(commandsManager.sps!!, commandsManager.pps, commandsManager.vps)
           }
-          if (!tlsEnabled) {
-            connectionSocket = Socket()
-            val socketAddress: SocketAddress = InetSocketAddress(host, port)
-            connectionSocket?.connect(socketAddress, 5000)
-          } else {
-            connectionSocket = createSSlSocket(host, port)
-            if (connectionSocket == null) throw IOException("Socket creation failed")
-          }
-          connectionSocket?.soTimeout = 5000
-          val reader = BufferedReader(InputStreamReader(connectionSocket?.getInputStream()))
-          val outputStream = connectionSocket?.getOutputStream()
-          val writer = BufferedWriter(OutputStreamWriter(outputStream))
-          this@RtspClient.reader = reader
-          this@RtspClient.writer = writer
-          writer.write(commandsManager.createOptions())
-          writer.flush()
-          commandsManager.getResponse(reader, Method.OPTIONS)
-          writer.write(commandsManager.createAnnounce())
-          writer.flush()
+          val socket = TcpStreamSocketImp(host, port, tlsEnabled, certificates)
+          this@RtspClient.socket = socket
+          socket.connect()
+          socket.write(commandsManager.createOptions())
+          socket.flush()
+          commandsManager.getResponse(socket, Method.OPTIONS)
+          socket.write(commandsManager.createAnnounce())
+          socket.flush()
           //check if you need credential for stream, if you need try connect with credential
-          val announceResponse = commandsManager.getResponse(reader, Method.ANNOUNCE)
+          val announceResponse = commandsManager.getResponse(socket, Method.ANNOUNCE)
           when (announceResponse.status) {
             403 -> {
               onMainThread {
-                connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, access denied")
+                connectChecker.onConnectionFailed("Error configure stream, access denied")
               }
               Log.e(TAG, "Response 403, access denied")
               return@launch
@@ -235,27 +258,27 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
             401 -> {
               if (commandsManager.user == null || commandsManager.password == null) {
                 onMainThread {
-                  connectCheckerRtsp.onAuthErrorRtsp()
+                  connectChecker.onAuthError()
                 }
                 return@launch
               } else {
-                writer.write(commandsManager.createAnnounceWithAuth(announceResponse.text))
-                writer.flush()
-                when (commandsManager.getResponse(reader, Method.ANNOUNCE).status) {
+                socket.write(commandsManager.createAnnounceWithAuth(announceResponse.text))
+                socket.flush()
+                when (commandsManager.getResponse(socket, Method.ANNOUNCE).status) {
                   401 -> {
                     onMainThread {
-                      connectCheckerRtsp.onAuthErrorRtsp()
+                      connectChecker.onAuthError()
                     }
                     return@launch
                   }
                   200 -> {
                     onMainThread {
-                      connectCheckerRtsp.onAuthSuccessRtsp()
+                      connectChecker.onAuthSuccess()
                     }
                   }
                   else -> {
                     onMainThread {
-                      connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, announce with auth failed")
+                      connectChecker.onConnectionFailed("Error configure stream, announce with auth failed")
                     }
                     return@launch
                   }
@@ -267,64 +290,74 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
             }
             else -> {
               onMainThread {
-                connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, announce failed")
+                connectChecker.onConnectionFailed("Error configure stream, announce failed")
               }
               return@launch
             }
           }
           if (!commandsManager.videoDisabled) {
-            writer.write(commandsManager.createSetup(RtpConstants.trackVideo))
-            writer.flush()
-            val setupVideoStatus = commandsManager.getResponse(reader, Method.SETUP).status
+            socket.write(commandsManager.createSetup(RtpConstants.trackVideo))
+            socket.flush()
+            val setupVideoStatus = commandsManager.getResponse(socket, Method.SETUP).status
             if (setupVideoStatus != 200) {
               onMainThread {
-                connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, setup video $setupVideoStatus")
+                connectChecker.onConnectionFailed("Error configure stream, setup video $setupVideoStatus")
               }
               return@launch
             }
           }
           if (!commandsManager.audioDisabled) {
-            writer.write(commandsManager.createSetup(RtpConstants.trackAudio))
-            writer.flush()
-            val setupAudioStatus = commandsManager.getResponse(reader, Method.SETUP).status
+            socket.write(commandsManager.createSetup(RtpConstants.trackAudio))
+            socket.flush()
+            val setupAudioStatus = commandsManager.getResponse(socket, Method.SETUP).status
             if (setupAudioStatus != 200) {
               onMainThread {
-                connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, setup audio $setupAudioStatus")
+                connectChecker.onConnectionFailed("Error configure stream, setup audio $setupAudioStatus")
               }
               return@launch
             }
           }
-          writer.write(commandsManager.createRecord())
-          writer.flush()
-          val recordStatus = commandsManager.getResponse(reader, Method.RECORD).status
+          socket.write(commandsManager.createRecord())
+          socket.flush()
+          val recordStatus = commandsManager.getResponse(socket, Method.RECORD).status
           if (recordStatus != 200) {
             onMainThread {
-              connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, record $recordStatus")
+              connectChecker.onConnectionFailed("Error configure stream, record $recordStatus")
             }
             return@launch
           }
-          outputStream?.let { out ->
-            rtspSender.setDataStream(out, host)
-          }
-          val videoPorts = commandsManager.videoServerPorts
-          val audioPorts = commandsManager.audioServerPorts
-          if (!commandsManager.videoDisabled) {
-            rtspSender.setVideoPorts(videoPorts[0], videoPorts[1])
-          }
-          if (!commandsManager.audioDisabled) {
-            rtspSender.setAudioPorts(audioPorts[0], audioPorts[1])
-          }
+          val videoClientPorts = if (!commandsManager.videoDisabled) {
+            commandsManager.videoClientPorts
+          } else arrayOf<Int?>(null, null)
+          val videoServerPorts = if (!commandsManager.videoDisabled) {
+            commandsManager.videoServerPorts
+          } else arrayOf<Int?>(null, null)
+          val audioClientPorts = if (!commandsManager.audioDisabled) {
+            commandsManager.audioClientPorts
+          } else arrayOf<Int?>(null, null)
+          val audioServerPorts = if (!commandsManager.audioDisabled) {
+            commandsManager.audioServerPorts
+          } else arrayOf<Int?>(null, null)
+
+          rtspSender.setSocketsInfo(commandsManager.protocol,
+            host,
+            videoClientPorts,
+            audioClientPorts,
+            videoServerPorts,
+            audioServerPorts
+          )
+          rtspSender.setSocket(socket)
           rtspSender.start()
           reTries = numRetry
           onMainThread {
-            connectCheckerRtsp.onConnectionSuccessRtsp()
+            connectChecker.onConnectionSuccess()
           }
           handleServerCommands()
         }.exceptionOrNull()
         if (error != null) {
           Log.e(TAG, "connection error", error)
           onMainThread {
-            connectCheckerRtsp.onConnectionFailedRtsp("Error configure stream, ${error.message}")
+            connectChecker.onConnectionFailed("Error configure stream, ${error.validMessage()}")
           }
           return@launch
         }
@@ -338,20 +371,20 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
       val error = runCatching {
         if (isAlive()) {
           delay(2000)
-          reader?.let { r ->
-            if (r.ready()) {
-              val command = commandsManager.getResponse(r)
+          socket?.let { socket ->
+            if (socket.isConnected()) {
+              val command = commandsManager.getResponse(socket)
               //Do something depend of command if required
             }
           }
         } else {
           onMainThread {
-            connectCheckerRtsp.onConnectionFailedRtsp("No response from server")
+            connectChecker.onConnectionFailed("No response from server")
           }
           scope.cancel()
         }
       }.exceptionOrNull()
-      if (error != null && error !is SocketTimeoutException) {
+      if (error != null && ConnectionFailed.parse(error.validMessage()) != ConnectionFailed.TIMEOUT) {
         scope.cancel()
       }
     }
@@ -362,9 +395,9 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
     Your firewall could block it.
    */
   private fun isAlive(): Boolean {
-    val connected = connectionSocket?.isConnected ?: false
+    val connected = socket?.isConnected() ?: false
     if (!checkServerAlive) return connected
-    val reachable = connectionSocket?.inetAddress?.isReachable(5000) ?: false
+    val reachable = socket?.isReachable() ?: false
     return if (connected && !reachable) false else connected
   }
 
@@ -377,14 +410,12 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
   private suspend fun disconnect(clear: Boolean) {
     if (isStreaming) rtspSender.stop()
     val error = runCatching {
-      writer?.write(commandsManager.createTeardown())
-      writer?.flush()
-      connectionSocket?.close()
-      reader?.close()
-      reader = null
-      writer?.close()
-      writer = null
-      connectionSocket = null
+      withTimeoutOrNull(100) {
+        socket?.write(commandsManager.createTeardown())
+        socket?.flush()
+      }
+      socket?.close()
+      socket = null
       Log.i(TAG, "write teardown success")
     }.exceptionOrNull()
     if (error != null) {
@@ -396,7 +427,7 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
       doingRetry = false
       isStreaming = false
       onMainThread {
-        connectCheckerRtsp.onDisconnectRtsp()
+        connectChecker.onDisconnect()
       }
       mutex = Mutex(true)
       jobRetry?.cancelAndJoin()
@@ -412,20 +443,22 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
     scope = CoroutineScope(Dispatchers.IO)
   }
 
-  fun sendVideo(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+  fun sendVideo(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
     if (!commandsManager.videoDisabled) {
-      rtspSender.sendVideoFrame(h264Buffer, info)
+      rtspSender.sendMediaFrame(MediaFrame(videoBuffer.clone(), info.toMediaFrameInfo(), MediaFrame.Type.VIDEO))
     }
   }
 
-  fun sendAudio(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+  fun sendAudio(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
     if (!commandsManager.audioDisabled) {
-      rtspSender.sendAudioFrame(aacBuffer, info)
+      rtspSender.sendMediaFrame(MediaFrame(audioBuffer.clone(), info.toMediaFrameInfo(), MediaFrame.Type.AUDIO))
     }
   }
 
-  fun hasCongestion(): Boolean {
-    return rtspSender.hasCongestion()
+  @JvmOverloads
+  @Throws(IllegalArgumentException::class)
+  fun hasCongestion(percentUsed: Float = 20f): Boolean {
+    return rtspSender.hasCongestion(percentUsed)
   }
 
   @JvmOverloads
@@ -463,4 +496,23 @@ class RtspClient(private val connectCheckerRtsp: ConnectCheckerRtsp) {
   fun setLogs(enable: Boolean) {
     rtspSender.setLogs(enable)
   }
+
+  fun clearCache() {
+    rtspSender.clearCache()
+  }
+
+  fun getItemsInCache(): Int = rtspSender.getItemsInCache()
+
+  /**
+   * @param factor values from 0.1f to 1f
+   * Set an exponential factor to the bitrate calculation to avoid bitrate spikes
+   */
+  fun setBitrateExponentialFactor(factor: Float) {
+    rtspSender.setBitrateExponentialFactor(factor)
+  }
+
+  /**
+   * Get the exponential factor used to calculate the bitrate. Default 1f
+   */
+  fun getBitrateExponentialFactor() = rtspSender.getBitrateExponentialFactor()
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,6 @@ enum class ExtensionField(val value: Int) {
   HS_REQ(1), KM_REQ(2), CONFIG(4), HS_V5_MAGIC(18967);
 
   companion object {
-    infix fun from(value: Int): ExtensionField = ExtensionField.values().firstOrNull { it.value == value } ?: throw IOException("unknown extension field: $value")
+    infix fun from(value: Int): ExtensionField = entries.firstOrNull { it.value == value } ?: throw IOException("unknown extension field: $value")
   }
 }

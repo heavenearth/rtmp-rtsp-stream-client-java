@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ public class BitrateAdapter {
   private int oldBitrate;
   private int averageBitrate;
   private int cont;
-  private Listener listener;
+  private final Listener listener;
   private float decreaseRange = 0.8f; //20%
   private float increaseRange = 1.2f; //20%
 

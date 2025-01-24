@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,6 @@ enum class ControlType(val value: Int) {
   SUB_TYPE(0);
 
   companion object {
-    infix fun from(value: Int): ControlType = ControlType.values().firstOrNull { it.value == value } ?: throw IOException("unknown control type: $value")
+    infix fun from(value: Int): ControlType = entries.firstOrNull { it.value == value } ?: throw IOException("unknown control type: $value")
   }
 }

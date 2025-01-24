@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,17 +25,19 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
-import com.pedro.encoder.Frame;
+import com.pedro.common.AudioCodec;
+import com.pedro.encoder.EncoderErrorCallback;
+import com.pedro.encoder.TimestampMode;
 import com.pedro.encoder.audio.AudioEncoder;
-import com.pedro.encoder.audio.GetAacData;
+import com.pedro.encoder.audio.GetAudioData;
 import com.pedro.encoder.input.audio.CustomAudioEffect;
 import com.pedro.encoder.input.audio.GetMicrophoneData;
 import com.pedro.encoder.input.audio.MicrophoneManager;
-import com.pedro.encoder.input.audio.MicrophoneManagerManual;
-import com.pedro.encoder.input.audio.MicrophoneMode;
+import com.pedro.encoder.utils.CodecUtil;
 import com.pedro.library.base.recording.BaseRecordController;
 import com.pedro.library.base.recording.RecordController;
 import com.pedro.library.util.AacMuxerRecordController;
+import com.pedro.library.util.streamclient.StreamBaseClient;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -46,44 +48,33 @@ import java.nio.ByteBuffer;
  *
  * Created by pedro on 10/07/18.
  */
-public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
+public abstract class OnlyAudioBase {
 
   protected BaseRecordController recordController;
-  private MicrophoneManager microphoneManager;
+  private final MicrophoneManager microphoneManager;
   private AudioEncoder audioEncoder;
   private boolean streaming = false;
 
   public OnlyAudioBase() {
-    setMicrophoneMode(MicrophoneMode.ASYNC);
+    microphoneManager = new MicrophoneManager(getMicrophoneData);
+    audioEncoder = new AudioEncoder(getAudioData);
     recordController = new AacMuxerRecordController();
   }
 
   /**
-   * Must be called before prepareAudio.
-   *
-   * @param microphoneMode mode to work accord to audioEncoder. By default ASYNC:
-   * SYNC using same thread. This mode could solve choppy audio or audio frame discarded.
-   * ASYNC using other thread.
+   * Set the mode to calculate timestamp. By default CLOCK.
+   * Must be called before startRecord/startStream or it will be ignored.
    */
-  public void setMicrophoneMode(MicrophoneMode microphoneMode) {
-    switch (microphoneMode) {
-      case SYNC:
-        microphoneManager = new MicrophoneManagerManual();
-        audioEncoder = new AudioEncoder(this);
-        audioEncoder.setGetFrame(((MicrophoneManagerManual) microphoneManager).getGetFrame());
-        audioEncoder.setTsModeBuffer(false);
-        break;
-      case ASYNC:
-        microphoneManager = new MicrophoneManager(this);
-        audioEncoder = new AudioEncoder(this);
-        audioEncoder.setTsModeBuffer(false);
-        break;
-      case BUFFER:
-        microphoneManager = new MicrophoneManager(this);
-        audioEncoder = new AudioEncoder(this);
-        audioEncoder.setTsModeBuffer(true);
-        break;
-    }
+  public void setTimestampMode(TimestampMode timestampModeAudio) {
+    audioEncoder.setTimestampMode(timestampModeAudio);
+  }
+
+  /**
+   * Set a callback to know errors related with Video/Audio encoders
+   * @param encoderErrorCallback callback to use, null to remove
+   */
+  public void setEncoderErrorCallback(EncoderErrorCallback encoderErrorCallback) {
+    audioEncoder.setEncoderErrorCallback(encoderErrorCallback);
   }
 
   /**
@@ -94,14 +85,13 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
   }
 
   /**
-   * Basic auth developed to work with Wowza. No tested with other server
-   *
-   * @param user auth.
-   * @param password auth.
+   * @param codecTypeAudio force type codec used. FIRST_COMPATIBLE_FOUND, SOFTWARE, HARDWARE
    */
-  public abstract void setAuthorization(String user, String password);
+  public void forceCodecType(CodecUtil.CodecType codecTypeAudio) {
+    audioEncoder.forceCodecType(codecTypeAudio);
+  }
 
-  protected abstract void prepareAudioRtp(boolean isStereo, int sampleRate);
+  protected abstract void onAudioInfoImp(boolean isStereo, int sampleRate);
 
   /**
    * Call this method before use @startStream. If not you will do a stream without audio.
@@ -120,9 +110,8 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
     if (!microphoneManager.createMicrophone(audioSource, sampleRate, isStereo, echoCanceler, noiseSuppressor)) {
       return false;
     }
-    prepareAudioRtp(isStereo, sampleRate);
-    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo,
-        microphoneManager.getMaxInputSize());
+    onAudioInfoImp(isStereo, sampleRate);
+    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo);
   }
 
   public boolean prepareAudio(int bitrate, int sampleRate, boolean isStereo, boolean echoCanceler,
@@ -194,7 +183,7 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
     if (!streaming) stopStream();
   }
 
-  protected abstract void startStreamRtp(String url);
+  protected abstract void startStreamImp(String url);
 
   /**
    * Need be called after @prepareVideo or/and @prepareAudio.
@@ -212,7 +201,7 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
     if (!recordController.isRunning()) {
       startEncoders();
     }
-    startStreamRtp(url);
+    startStreamImp(url);
   }
 
   /**
@@ -221,7 +210,7 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
   public void stopStream() {
     if (streaming) {
       streaming = false;
-      stopStreamRtp();
+      stopStreamImp();
     }
     if (!recordController.isRecording()) {
       microphoneManager.stop();
@@ -231,11 +220,12 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
   }
 
   private void startEncoders() {
-    audioEncoder.start();
+    long startTs = System.nanoTime() / 1000;
+    audioEncoder.start(startTs);
     microphoneManager.start();
   }
 
-  protected abstract void stopStreamRtp();
+  protected abstract void stopStreamImp();
 
   /**
    * Get record state.
@@ -256,63 +246,6 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
 
   public RecordController.Status getRecordStatus() {
     return recordController.getStatus();
-  }
-
-  /**
-   * Retries to connect with the given delay. You can pass an optional backupUrl
-   * if you'd like to connect to your backup server instead of the original one.
-   * Given backupUrl replaces the original one.
-   */
-  public boolean reTry(long delay, String reason, @Nullable String backupUrl) {
-    boolean result = shouldRetry(reason);
-    if (result) {
-      reConnect(delay, backupUrl);
-    }
-    return result;
-  }
-
-  public boolean reTry(long delay, String reason) {
-    return reTry(delay, reason, null);
-  }
-
-  protected abstract boolean shouldRetry(String reason);
-
-  public abstract void setReTries(int reTries);
-
-  protected abstract void reConnect(long delay, @Nullable String backupUrl);
-
-  //cache control
-  public abstract boolean hasCongestion();
-
-  public abstract void resizeCache(int newSize) throws RuntimeException;
-
-  public abstract int getCacheSize();
-
-  public abstract long getSentAudioFrames();
-
-  public abstract long getSentVideoFrames();
-
-  public abstract long getDroppedAudioFrames();
-
-  public abstract long getDroppedVideoFrames();
-
-  public abstract void resetSentAudioFrames();
-
-  public abstract void resetSentVideoFrames();
-
-  public abstract void resetDroppedAudioFrames();
-
-  public abstract void resetDroppedVideoFrames();
-
-  /**
-   * Set a custom size of audio buffer input.
-   * If you set 0 or less you can disable it to use library default value.
-   * Must be called before of prepareAudio method.
-   *
-   * @param size in bytes. Recommended multiple of 1024 (2048, 4096, 8196, etc)
-   */
-  public void setAudioMaxInputSize(int size) {
-    microphoneManager.setMaxInputSize(size);
   }
 
   /**
@@ -347,31 +280,47 @@ public abstract class OnlyAudioBase implements GetAacData, GetMicrophoneData {
     return streaming;
   }
 
-  protected abstract void getAacDataRtp(ByteBuffer aacBuffer, MediaCodec.BufferInfo info);
-
-  @Override
-  public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-      recordController.recordAudio(aacBuffer, info);
-    }
-    if (streaming) getAacDataRtp(aacBuffer, info);
+  public boolean resetAudioEncoder() {
+    return audioEncoder.reset();
   }
 
-  @Override
-  public void inputPCMData(Frame frame) {
-    audioEncoder.inputPCMData(frame);
-  }
-
-  @Override
-  public void onAudioFormat(MediaFormat mediaFormat) {
-    recordController.setAudioFormat(mediaFormat, true);
-  }
+  protected abstract void getAudioDataImp(ByteBuffer audioBuffer, MediaCodec.BufferInfo info);
 
   public void setRecordController(BaseRecordController recordController) {
     if (!isRecording()) this.recordController = recordController;
   }
 
-  public abstract void setLogs(boolean enable);
+  private final GetMicrophoneData getMicrophoneData = frame -> {
+    audioEncoder.inputPCMData(frame);
+  };
 
-  public abstract void setCheckServerAlive(boolean enable);
+  private final GetAudioData getAudioData = new GetAudioData() {
+    @Override
+    public void getAudioData(@NonNull ByteBuffer audioBuffer, @NonNull MediaCodec.BufferInfo info) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+        recordController.recordAudio(audioBuffer, info);
+      }
+      if (streaming) getAudioDataImp(audioBuffer, info);
+    }
+
+    @Override
+    public void onAudioFormat(@NonNull MediaFormat mediaFormat) {
+      recordController.setAudioFormat(mediaFormat, true);
+    }
+  };
+
+  public abstract StreamBaseClient getStreamClient();
+
+  public void setAudioCodec(AudioCodec codec) {
+    setAudioCodecImp(codec);
+    recordController.setAudioCodec(codec);
+    String type = switch (codec) {
+      case G711 -> CodecUtil.G711_MIME;
+      case AAC -> CodecUtil.AAC_MIME;
+      case OPUS -> CodecUtil.OPUS_MIME;
+    };
+    audioEncoder.setType(type);
+  }
+
+  protected abstract void setAudioCodecImp(AudioCodec codec);
 }

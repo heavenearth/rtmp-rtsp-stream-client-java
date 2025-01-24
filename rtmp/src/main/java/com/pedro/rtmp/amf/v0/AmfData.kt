@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ abstract class AmfData {
     }
 
     fun getMarkType(type: Int): AmfType {
-      return AmfType.values().find { it.mark.toInt() == type } ?: AmfType.STRING
+      return AmfType.entries.find { it.mark.toInt() == type } ?: AmfType.STRING
     }
   }
 

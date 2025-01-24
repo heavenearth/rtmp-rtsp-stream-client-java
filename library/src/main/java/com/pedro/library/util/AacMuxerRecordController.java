@@ -1,15 +1,33 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.library.util;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Build;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 
+import com.pedro.common.AudioCodec;
+import com.pedro.common.BitrateManager;
+import com.pedro.common.ExtensionsKt;
 import com.pedro.library.base.recording.BaseRecordController;
 
 import java.io.FileDescriptor;
@@ -24,7 +42,6 @@ import java.util.Arrays;
  */
 public class AacMuxerRecordController extends BaseRecordController {
 
-    private static final String TAG = "AacMuxRecordController";
     private OutputStream outputStream;
     private final Integer[] AudioSampleRates = new Integer[] {
             96000,  // 0
@@ -50,16 +67,23 @@ public class AacMuxerRecordController extends BaseRecordController {
     @Override
     @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
     public void startRecord(@NonNull String path, @Nullable Listener listener) throws IOException {
+        if (audioCodec != AudioCodec.AAC) throw new IOException("Unsupported AudioCodec: " + audioCodec.name());
         outputStream = new FileOutputStream(path);
         this.listener = listener;
         status = Status.STARTED;
-        if (listener != null) listener.onStatusChange(status);
+        if (listener != null) {
+            bitrateManager = new BitrateManager(listener);
+            listener.onStatusChange(status);
+        } else {
+            bitrateManager = null;
+        }
         if (sampleRate != -1 && channels != -1) init();
     }
 
     @Override
     @RequiresApi(api = Build.VERSION_CODES.O)
     public void startRecord(@NonNull FileDescriptor fd, @Nullable Listener listener) throws IOException {
+        if (audioCodec != AudioCodec.AAC) throw new IOException("Unsupported AudioCodec: " + audioCodec.name());
         throw new IOException("FileDescriptor unsupported");
     }
 
@@ -71,6 +95,7 @@ public class AacMuxerRecordController extends BaseRecordController {
         pauseTime = 0;
         sampleRate = -1;
         channels = -1;
+        startTs = 0;
         if (listener != null) listener.onStatusChange(status);
     }
 
@@ -84,9 +109,9 @@ public class AacMuxerRecordController extends BaseRecordController {
     @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
     public void recordAudio(ByteBuffer audioBuffer, MediaCodec.BufferInfo audioInfo) {
         if (status == Status.RECORDING) {
-            Log.i(TAG, "s: " + sampleRate + ", c: " + channels);
             updateFormat(this.audioInfo, audioInfo);
-            write(audioBuffer, this.audioInfo);
+            //we need duplicate buffer to avoid problems with the buffer
+            write(audioBuffer.duplicate(), this.audioInfo);
         }
     }
 
@@ -122,9 +147,10 @@ public class AacMuxerRecordController extends BaseRecordController {
                 byte[] data = new byte[byteBuffer.remaining()];
                 byteBuffer.get(data);
                 outputStream.write(data);
+                if (bitrateManager != null) bitrateManager.calculateBitrate(info.size * 8L, ExtensionsKt.getSuspendContext());
             }
-        } catch (IllegalStateException | IllegalArgumentException | IOException e) {
-            Log.i(TAG, "Write error", e);
+        } catch (Exception e) {
+            if (listener != null) listener.onError(e);
         }
     }
 

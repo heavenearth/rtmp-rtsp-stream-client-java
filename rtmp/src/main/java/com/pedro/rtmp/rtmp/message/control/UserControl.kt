@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ class UserControl(var type: Type = Type.PING_REQUEST, var event: Event = Event(-
   override fun readBody(input: InputStream) {
     bodySize = 0
     val t = input.readUInt16()
-    type = Type.values().find { it.mark.toInt() == t } ?: throw IOException("unknown user control type: $t")
+    type = Type.entries.find { it.mark.toInt() == t } ?: throw IOException("unknown user control type: $t")
     bodySize += 2
     val data = input.readUInt32()
     bodySize += 4

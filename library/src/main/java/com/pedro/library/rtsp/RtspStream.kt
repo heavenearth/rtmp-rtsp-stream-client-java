@@ -1,17 +1,36 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.library.rtsp
 
 import android.content.Context
 import android.media.MediaCodec
 import android.os.Build
 import androidx.annotation.RequiresApi
-import com.pedro.encoder.utils.CodecUtil
+import com.pedro.common.AudioCodec
+import com.pedro.common.ConnectChecker
+import com.pedro.common.VideoCodec
 import com.pedro.library.base.StreamBase
-import com.pedro.library.util.sources.AudioManager
-import com.pedro.library.util.sources.VideoManager
-import com.pedro.rtsp.rtsp.Protocol
+import com.pedro.encoder.input.sources.audio.AudioSource
+import com.pedro.encoder.input.sources.audio.MicrophoneSource
+import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.sources.video.VideoSource
+import com.pedro.library.util.streamclient.RtspStreamClient
+import com.pedro.library.util.streamclient.StreamClientListener
 import com.pedro.rtsp.rtsp.RtspClient
-import com.pedro.rtsp.rtsp.VideoCodec
-import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import java.nio.ByteBuffer
 
 /**
@@ -22,103 +41,51 @@ import java.nio.ByteBuffer
  */
 
 @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-class RtspStream(context: Context, connectCheckerRtsp: ConnectCheckerRtsp, videoSource: VideoManager.Source,
-  audioSource: AudioManager.Source): StreamBase(context, videoSource, audioSource) {
+class RtspStream(
+    context: Context, connectChecker: ConnectChecker, videoSource: VideoSource,
+    audioSource: AudioSource
+): StreamBase(context, videoSource, audioSource) {
 
-  constructor(context: Context, connectCheckerRtsp: ConnectCheckerRtsp):
-      this(context, connectCheckerRtsp, VideoManager.Source.CAMERA2, AudioManager.Source.MICROPHONE)
+  private val rtspClient = RtspClient(connectChecker)
+  private val streamClientListener = object: StreamClientListener {
+    override fun onRequestKeyframe() {
+      requestKeyframe()
+    }
+  }
+  override fun getStreamClient(): RtspStreamClient = RtspStreamClient(rtspClient, streamClientListener)
 
-  private val rtspClient = RtspClient(connectCheckerRtsp)
+  constructor(context: Context, connectChecker: ConnectChecker):
+      this(context, connectChecker, Camera2Source(context), MicrophoneSource())
 
-  /**
-   * Internet protocol used.
-   *
-   * @param protocol Could be Protocol.TCP or Protocol.UDP.
-   */
-  fun setProtocol(protocol: Protocol?) {
-    rtspClient.setProtocol(protocol!!)
+  override fun setVideoCodecImp(codec: VideoCodec) {
+      rtspClient.setVideoCodec(codec)
   }
 
-  fun setVideoCodec(videoCodec: VideoCodec) {
-    val mime = if (videoCodec === VideoCodec.H265) CodecUtil.H265_MIME else CodecUtil.H264_MIME
-    super.setVideoMime(mime)
+  override fun setAudioCodecImp(codec: AudioCodec) {
+    rtspClient.setAudioCodec(codec)
   }
 
-  override fun audioInfo(sampleRate: Int, isStereo: Boolean) {
+  override fun onAudioInfoImp(sampleRate: Int, isStereo: Boolean) {
     rtspClient.setAudioInfo(sampleRate, isStereo)
   }
 
-  override fun rtpStartStream(endPoint: String) {
+  override fun startStreamImp(endPoint: String) {
     rtspClient.connect(endPoint)
   }
 
-  override fun rtpStopStream() {
+  override fun stopStreamImp() {
     rtspClient.disconnect()
   }
 
-  override fun setAuthorization(user: String?, password: String?) {
-    rtspClient.setAuthorization(user, password)
-  }
-
-  override fun onSpsPpsVpsRtp(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
+  override fun onVideoInfoImp(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
     rtspClient.setVideoInfo(sps, pps, vps)
   }
 
-  override fun getH264DataRtp(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    rtspClient.sendVideo(h264Buffer, info)
+  override fun getVideoDataImp(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    rtspClient.sendVideo(videoBuffer, info)
   }
 
-  override fun getAacDataRtp(aacBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    rtspClient.sendAudio(aacBuffer, info)
-  }
-
-  override fun setReTries(reTries: Int) {
-    rtspClient.setReTries(reTries)
-  }
-
-  override fun shouldRetry(reason: String): Boolean = rtspClient.shouldRetry(reason)
-
-  override fun reConnect(delay: Long, backupUrl: String?) {
-    rtspClient.reConnect(delay, backupUrl)
-  }
-
-  override fun hasCongestion(): Boolean = rtspClient.hasCongestion()
-
-  override fun setLogs(enabled: Boolean) {
-    rtspClient.setLogs(enabled)
-  }
-
-  override fun setCheckServerAlive(enabled: Boolean) {
-    rtspClient.setCheckServerAlive(enabled)
-  }
-
-  override fun resizeCache(newSize: Int) {
-    rtspClient.resizeCache(newSize)
-  }
-
-  override fun getCacheSize(): Int = rtspClient.cacheSize
-
-  override fun getSentAudioFrames(): Long = rtspClient.sentAudioFrames
-
-  override fun getSentVideoFrames(): Long = rtspClient.sentVideoFrames
-
-  override fun getDroppedAudioFrames(): Long = rtspClient.droppedAudioFrames
-
-  override fun getDroppedVideoFrames(): Long = rtspClient.droppedVideoFrames
-
-  override fun resetSentAudioFrames() {
-    rtspClient.resetSentAudioFrames()
-  }
-
-  override fun resetSentVideoFrames() {
-    rtspClient.resetSentVideoFrames()
-  }
-
-  override fun resetDroppedAudioFrames() {
-    rtspClient.resetDroppedAudioFrames()
-  }
-
-  override fun resetDroppedVideoFrames() {
-    rtspClient.resetDroppedVideoFrames()
+  override fun getAudioDataImp(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    rtspClient.sendAudio(audioBuffer, info)
   }
 }

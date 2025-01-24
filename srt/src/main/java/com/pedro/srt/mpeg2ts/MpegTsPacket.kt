@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,5 +26,6 @@ import com.pedro.srt.srt.packets.data.PacketPosition
 data class MpegTsPacket(
   val buffer: ByteArray,
   val type: MpegType,
-  val packetPosition: PacketPosition
+  val packetPosition: PacketPosition,
+  val isKey: Boolean
 )

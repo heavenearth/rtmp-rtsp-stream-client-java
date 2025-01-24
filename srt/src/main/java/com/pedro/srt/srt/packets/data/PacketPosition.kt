@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,6 @@ enum class PacketPosition(val value: Int) {
   FIRST(2), MIDDLE(0), LAST(1), SINGLE(3);
 
   companion object {
-    infix fun from(value: Int): PacketPosition = PacketPosition.values().firstOrNull { it.value == value } ?: throw IOException("unknown packet position: $value")
+    infix fun from(value: Int): PacketPosition = entries.firstOrNull { it.value == value } ?: throw IOException("unknown packet position: $value")
   }
 }

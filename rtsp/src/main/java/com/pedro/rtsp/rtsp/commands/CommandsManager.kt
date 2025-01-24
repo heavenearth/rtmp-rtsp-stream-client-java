@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,23 @@
 
 package com.pedro.rtsp.rtsp.commands
 
-import android.util.Base64
 import android.util.Log
-import com.pedro.rtsp.BuildConfig
+import com.pedro.common.AudioCodec
+import com.pedro.common.TimeUtils
+import com.pedro.common.VideoCodec
+import com.pedro.common.getMd5Hash
+import com.pedro.common.socket.TcpStreamSocket
+import com.pedro.common.socket.TcpStreamSocketImp
 import com.pedro.rtsp.rtsp.Protocol
+import com.pedro.rtsp.rtsp.commands.SdpBody.createAV1Body
 import com.pedro.rtsp.rtsp.commands.SdpBody.createAacBody
+import com.pedro.rtsp.rtsp.commands.SdpBody.createG711Body
 import com.pedro.rtsp.rtsp.commands.SdpBody.createH264Body
 import com.pedro.rtsp.rtsp.commands.SdpBody.createH265Body
-import com.pedro.rtsp.utils.AuthUtil.getMd5Hash
+import com.pedro.rtsp.rtsp.commands.SdpBody.createOpusBody
 import com.pedro.rtsp.utils.RtpConstants
 import com.pedro.rtsp.utils.encodeToString
 import com.pedro.rtsp.utils.getData
-import java.io.BufferedReader
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.regex.Pattern
@@ -37,7 +42,7 @@ import java.util.regex.Pattern
  *
  * Class to create request to server and parse response from server.
  */
-class CommandsManager {
+open class CommandsManager {
 
   var host: String? = null
     private set
@@ -45,9 +50,11 @@ class CommandsManager {
     private set
   var path: String? = null
     private set
-  var sps: ByteArray? = null
+  var sps: ByteBuffer? = null
     private set
-  var pps: ByteArray? = null
+  var pps: ByteBuffer? = null
+    private set
+  var vps: ByteBuffer? = null
     private set
   private var cSeq = 0
   private var sessionId: String? = null
@@ -58,16 +65,20 @@ class CommandsManager {
   var videoDisabled = false
   var audioDisabled = false
   private val commandParser = CommandParser()
-
+  var videoCodec = VideoCodec.H264
+  var audioCodec = AudioCodec.AAC
   //For udp
-  val audioClientPorts = intArrayOf(5000, 5001)
-  val videoClientPorts = intArrayOf(5002, 5003)
-  val audioServerPorts = intArrayOf(5004, 5005)
-  val videoServerPorts = intArrayOf(5006, 5007)
+  val audioClientPorts = arrayOf<Int?>(5000, 5001)
+  val videoClientPorts = arrayOf<Int?>(5002, 5003)
+  val audioServerPorts = arrayOf<Int?>(5004, 5005)
+  val videoServerPorts = arrayOf<Int?>(5006, 5007)
 
-  //For H265
-  var vps: ByteArray? = null
-    private set
+  val spsString: String
+    get() = sps?.getData()?.encodeToString() ?: ""
+  val ppsString: String
+    get() = pps?.getData()?.encodeToString() ?: ""
+  val vpsString: String
+    get() = vps?.getData()?.encodeToString() ?: ""
 
   //For auth
   var user: String? = null
@@ -81,15 +92,23 @@ class CommandsManager {
   }
 
   init {
-    val uptime = System.currentTimeMillis()
+    val uptime = TimeUtils.getCurrentTimeMillis()
     timeStamp = uptime / 1000 shl 32 and ((uptime - uptime / 1000 * 1000 shr 32)
         / 1000) // NTP timestamp
   }
 
-  fun setVideoInfo(sps: ByteBuffer, pps: ByteBuffer, vps: ByteBuffer?) {
-    this.sps = sps.getData()
-    this.pps = pps.getData()
-    this.vps = vps?.getData() //H264 has no vps so if not null assume H265
+  fun videoInfoReady(): Boolean {
+    return when (videoCodec) {
+      VideoCodec.H264 -> sps != null && pps != null
+      VideoCodec.H265 -> sps != null && pps != null && vps != null
+      VideoCodec.AV1 -> sps != null
+    }
+  }
+
+  fun setVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
+    this.sps = sps
+    this.pps = pps
+    this.vps = vps
   }
 
   fun setAudioInfo(sampleRate: Int, isStereo: Boolean) {
@@ -120,32 +139,34 @@ class CommandsManager {
     sessionId = null
   }
 
-  private val spsString: String
-    get() = sps?.encodeToString() ?: ""
-  private val ppsString: String
-    get() = pps?.encodeToString() ?: ""
-  private val vpsString: String
-    get() = vps?.encodeToString() ?: ""
-
   private fun addHeaders(): String {
     return "CSeq: ${++cSeq}\r\n" +
-        "User-Agent: ${BuildConfig.LIBRARY_PACKAGE_NAME} ${BuildConfig.VERSION_NAME}\r\n" +
-        (if (sessionId == null) "" else "Session: $sessionId\r\n") +
-        (if (authorization == null) "" else "Authorization: $authorization\r\n")
+        (if (sessionId.isNullOrEmpty()) "" else "Session: $sessionId\r\n") +
+        (if (authorization.isNullOrEmpty()) "" else "Authorization: $authorization\r\n")
   }
 
   private fun createBody(): String {
     var videoBody = ""
     if (!videoDisabled) {
-      videoBody = if (vps == null) {
-        createH264Body(RtpConstants.trackVideo, spsString, ppsString)
-      } else {
-        createH265Body(RtpConstants.trackVideo, spsString, ppsString, vpsString)
+      videoBody = when (videoCodec) {
+        VideoCodec.H264 -> {
+          createH264Body(RtpConstants.trackVideo, spsString, ppsString)
+        }
+        VideoCodec.H265 -> {
+          createH265Body(RtpConstants.trackVideo, spsString, ppsString, vpsString)
+        }
+        VideoCodec.AV1 -> {
+          createAV1Body(RtpConstants.trackVideo)
+        }
       }
     }
     var audioBody = ""
     if (!audioDisabled) {
-      audioBody = createAacBody(RtpConstants.trackAudio, sampleRate, isStereo)
+      audioBody = when (audioCodec) {
+        AudioCodec.G711 -> createG711Body(RtpConstants.trackAudio, sampleRate, isStereo)
+        AudioCodec.AAC -> createAacBody(RtpConstants.trackAudio, sampleRate, isStereo)
+        AudioCodec.OPUS -> createOpusBody(RtpConstants.trackAudio)
+      }
     }
     return "v=0\r\n" +
         "o=- $timeStamp $timeStamp IN IP4 127.0.0.1\r\n" +
@@ -165,15 +186,15 @@ class CommandsManager {
       Log.i(TAG, "using digest auth")
       val realm = matcher.group(1)
       val nonce = matcher.group(2)
-      val hash1 = getMd5Hash("$user:$realm:$password")
-      val hash2 = getMd5Hash("ANNOUNCE:rtsp://$host:$port$path")
-      val hash3 = getMd5Hash("$hash1:$nonce:$hash2")
+      val hash1 = "$user:$realm:$password".getMd5Hash()
+      val hash2 = "ANNOUNCE:rtsp://$host:$port$path".getMd5Hash()
+      val hash3 = "$hash1:$nonce:$hash2".getMd5Hash()
       "Digest username=\"$user\", realm=\"$realm\", nonce=\"$nonce\", uri=\"rtsp://$host:$port$path\", response=\"$hash3\""
       //basic auth
     } else {
       Log.i(TAG, "using basic auth")
       val data = "$user:$password"
-      val base64Data = data.toByteArray().encodeToString(Base64.DEFAULT)
+      val base64Data = data.toByteArray().encodeToString()
       "Basic $base64Data"
     }
   }
@@ -230,10 +251,10 @@ class CommandsManager {
   }
 
   @Throws(IOException::class)
-  fun getResponse(reader: BufferedReader, method: Method = Method.UNKNOWN): Command {
+  suspend fun getResponse(socket: TcpStreamSocket, method: Method = Method.UNKNOWN): Command {
     var response = ""
     var line: String?
-    while (reader.readLine().also { line = it } != null) {
+    while (socket.readLine().also { line = it } != null) {
       response += "${line ?: ""}\n"
       //end of response
       if ((line?.length ?: 0) < 3) break

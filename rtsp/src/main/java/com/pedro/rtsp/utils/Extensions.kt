@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 pedroSG94.
+ * Copyright (C) 2024 pedroSG94.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 
 package com.pedro.rtsp.utils
 
-import android.util.Base64
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
-fun ByteArray.encodeToString(flags: Int = Base64.NO_WRAP): String {
-  return Base64.encodeToString(this, flags)
+@OptIn(ExperimentalEncodingApi::class)
+fun ByteArray.encodeToString(): String {
+  return Base64.encode(this)
 }
 
 fun ByteBuffer.getData(): ByteArray {
@@ -53,10 +53,4 @@ fun ByteBuffer.getVideoStartCodeSize(): Int {
     startCodeSize = 3
   }
   return startCodeSize
-}
-
-suspend fun onMainThread(code: () -> Unit) {
-  withContext(Dispatchers.Main) {
-    code()
-  }
 }

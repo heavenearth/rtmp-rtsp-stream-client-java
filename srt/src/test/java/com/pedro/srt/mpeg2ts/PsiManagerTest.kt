@@ -1,7 +1,22 @@
+/*
+ * Copyright (C) 2024 pedroSG94.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.pedro.srt.mpeg2ts
 
 import com.pedro.srt.mpeg2ts.psi.PsiManager
-import com.pedro.srt.mpeg2ts.psi.TableToSend
 import com.pedro.srt.mpeg2ts.service.Mpeg2TsService
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -11,26 +26,31 @@ import org.junit.Test
  */
 class PsiManagerTest {
 
-  private val service = Mpeg2TsService()
+  private val service = Mpeg2TsService().apply { generatePmt() }
+  private val psiManager = PsiManager(service).apply {
+    upgradePatVersion()
+    upgradeSdtVersion()
+  }
+  private val mpegTsPacketizer = MpegTsPacketizer(psiManager)
 
   @Test
-  fun `GIVEN a psiManager WHEN call should send is key false patPeriod times THEN return TableToSend PAT_PMT`() {
+  fun `GIVEN a psiManager WHEN call should send is key false patPeriod times THEN return PAT and PMT packets`() {
     val psiManager = PsiManager(service)
-    var sendValue = TableToSend.NONE
+    var packets = listOf<MpegTsPacket>()
     (0..PsiManager.patPeriod).forEach { _ ->
-      sendValue = psiManager.shouldSend(false)
+      packets = psiManager.checkSendInfo(false, mpegTsPacketizer)
     }
-    assertEquals(TableToSend.PAT_PMT, sendValue)
+    assertEquals(2, packets.size)
   }
 
   @Test
-  fun `GIVEN a psiManager WHEN call should send is key false sdtPeriod times THEN return TableToSend ALL`() {
+  fun `GIVEN a psiManager WHEN call should send is key false sdtPeriod times THEN return PMT, SDT and PAT packets`() {
     val psiManager = PsiManager(service)
-    var sendValue = TableToSend.NONE
+    var packets = listOf<MpegTsPacket>()
     (0..PsiManager.sdtPeriod).forEach { _ ->
-      sendValue = psiManager.shouldSend(false)
+      packets = psiManager.checkSendInfo(false, mpegTsPacketizer)
     }
-    assertEquals(TableToSend.ALL, sendValue)
+    assertEquals(3, packets.size)
   }
 
   @Test
